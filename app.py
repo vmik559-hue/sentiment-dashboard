@@ -112,7 +112,7 @@ def get_sector_leaders():
     return results
 
 def get_sector_heatmap_data():
-    """Calculate sector-wise sentiment for heatmap"""
+    """Calculate sector-wise sentiment for heatmap with size based on stock count"""
     latest = get_latest_sentiment()
     if latest is None:
         return []
@@ -122,6 +122,12 @@ def get_sector_heatmap_data():
     }).reset_index()
     sector_data.columns = ['sector', 'avg_sentiment', 'count']
     sector_data['avg_sentiment'] = sector_data['avg_sentiment'].round(2)
+    
+    # Calculate size ratio based on stock count (for visual sizing)
+    max_count = sector_data['count'].max() if len(sector_data) > 0 else 1
+    sector_data['size_ratio'] = (sector_data['count'] / max_count * 100).round(0).astype(int)
+    sector_data['size_ratio'] = sector_data['size_ratio'].clip(lower=40)  # Minimum 40% size
+    
     return sector_data.to_dict('records')
 
 def get_sentiment_distribution():
@@ -433,15 +439,17 @@ tailwind.config = {
 <span class="flex items-center"><div class="w-3 h-3 bg-red-500 mr-1 rounded-sm"></div> Bearish (&lt; -0.5)</span>
 </div>
 </div>
-<div id="sectorHeatmap" class="grid grid-cols-4 sm:grid-cols-6 gap-1 min-h-[180px]">
+<div id="sectorHeatmap" class="flex flex-wrap gap-1 min-h-[180px]">
 {% for sector in sector_heatmap %}
-<div class="rounded-sm cursor-pointer hover:ring-2 ring-white relative group flex items-center justify-center min-h-[50px] transition-all
-{% if sector.avg_sentiment >= 0.5 %}bg-emerald-600{% elif sector.avg_sentiment >= 0.3 %}bg-emerald-500{% elif sector.avg_sentiment >= 0.1 %}bg-emerald-400/80{% elif sector.avg_sentiment >= -0.1 %}bg-amber-500/70{% elif sector.avg_sentiment >= -0.3 %}bg-red-400/80{% elif sector.avg_sentiment >= -0.5 %}bg-red-500{% else %}bg-red-600{% endif %}">
-<div class="opacity-0 group-hover:opacity-100 transition-opacity absolute inset-0 flex flex-col items-center justify-center bg-black/60 rounded-sm p-1">
-<span class="text-[9px] font-bold text-white text-center leading-tight">{{ sector.sector }}</span>
-<span class="text-[10px] font-mono text-white">{{ "+%.2f"|format(sector.avg_sentiment) if sector.avg_sentiment >= 0 else "%.2f"|format(sector.avg_sentiment) }}</span>
+<div class="rounded-sm cursor-pointer hover:ring-2 ring-white relative group flex items-center justify-center transition-all
+{% if sector.avg_sentiment >= 0.5 %}bg-emerald-600{% elif sector.avg_sentiment >= 0.3 %}bg-emerald-500{% elif sector.avg_sentiment >= 0.1 %}bg-emerald-400{% elif sector.avg_sentiment >= -0.1 %}bg-amber-500{% elif sector.avg_sentiment >= -0.3 %}bg-red-400{% elif sector.avg_sentiment >= -0.5 %}bg-red-500{% else %}bg-red-600{% endif %}"
+style="width: {{ sector.size_ratio * 1.2 }}px; height: {{ sector.size_ratio }}px; min-width: 60px; min-height: 45px;">
+<div class="opacity-0 group-hover:opacity-100 transition-opacity absolute inset-0 flex flex-col items-center justify-center bg-black/70 rounded-sm p-1 z-10">
+<span class="text-[10px] font-bold text-white text-center leading-tight">{{ sector.sector }}</span>
+<span class="text-[11px] font-mono text-white font-bold">{{ "+%.2f"|format(sector.avg_sentiment) if sector.avg_sentiment >= 0 else "%.2f"|format(sector.avg_sentiment) }}</span>
+<span class="text-[8px] text-slate-300">{{ sector.count }} stocks</span>
 </div>
-<span class="text-[8px] font-bold text-white/80 group-hover:opacity-0">{{ sector.sector[:3] }}</span>
+<span class="text-[9px] font-bold text-white/90 group-hover:opacity-0 text-center px-1">{{ sector.sector[:4] }}</span>
 </div>
 {% endfor %}
 </div>
@@ -853,30 +861,36 @@ def api_timeseries():
 
 @app.route('/api/export')
 def api_export():
-    """Export current data to Excel"""
-    latest = get_latest_sentiment()
-    if latest is None:
+    """Export ALL time period data to Excel (full historical data)"""
+    df = get_all_data()
+    if df is None:
         return jsonify({'error': 'No data available'}), 404
     
     # Add top keyword
-    latest['TopKeyword'] = latest['Company'].map(TOP_KEYWORDS).fillna('N/A')
+    df['TopKeyword'] = df['Company'].map(TOP_KEYWORDS).fillna('N/A')
+    
+    # Sort by Company and Date
+    month_map = {'Jan':1, 'Feb':2, 'Mar':3, 'Apr':4, 'May':5, 'Jun':6,
+                 'Jul':7, 'Aug':8, 'Sep':9, 'Oct':10, 'Nov':11, 'Dec':12}
+    df['Month_Num'] = df['Month'].map(month_map)
+    df = df.sort_values(['Company', 'Year', 'Month_Num'], ascending=[True, False, False])
     
     # Select relevant columns
     export_cols = ['Company', 'Sector', 'Year', 'Month', 'Overall_Sentiment', 
                    'Polarity', 'Keyword_Sentiment', 'Guidance', 'Risk', 'TopKeyword']
-    export_df = latest[[c for c in export_cols if c in latest.columns]]
+    export_df = df[[c for c in export_cols if c in df.columns]]
     
     # Create Excel file in memory
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        export_df.to_excel(writer, sheet_name='Sentiment Analysis', index=False)
+        export_df.to_excel(writer, sheet_name='Sentiment Analysis (All Periods)', index=False)
     output.seek(0)
     
     return send_file(
         output,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
-        download_name='sentiment_analysis_export.xlsx'
+        download_name='sentiment_analysis_all_periods.xlsx'
     )
 
 @app.route('/health')
