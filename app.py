@@ -2,13 +2,12 @@
 INDIAN MARKET SENTIMENT TERMINAL - Advanced Dashboard
 =====================================================
 Flask app serving the Market Sentiment Terminal with Bloomberg-style UI.
-
-Dashboard: https://YOUR-RAILWAY-URL.up.railway.app
 """
 
 import os
+import io
 from pathlib import Path
-from flask import Flask, render_template_string, jsonify, request
+from flask import Flask, render_template_string, jsonify, request, send_file
 import pandas as pd
 import json
 
@@ -40,19 +39,17 @@ SECTOR_MAPPING = {
     'TITAN': 'Consumer', 'TRENT': 'Retail', 'ULTRACEMCO': 'Cement', 'WIPRO': 'IT Services',
 }
 
-# Keywords for positive sentiment display
-POSITIVE_KEYWORDS = {
+# Keywords mapping
+TOP_KEYWORDS = {
     'HCLTECH': 'GenAI', 'TCS': 'Deal Wins', 'RELIANCE': 'New Energy', 'ITC': 'FMCG Growth',
     'LT': 'Order Book', 'INFY': 'Digital', 'BHARTIARTL': 'ARPU', 'ASIANPAINT': 'Volume',
-}
-
-NEGATIVE_KEYWORDS = {
-    'BAJFINANCE': 'NIM Compression', 'INFY': 'Weak Volume', 'WIPRO': 'Attrition',
-    'TATASTEEL': 'Europe Weakness', 'UPL': 'Inventory Loss',
+    'BAJFINANCE': 'NIM Comp.', 'WIPRO': 'Attrition', 'TATASTEEL': 'Europe', 'ADANIPORTS': 'Cargo Vol',
+    'HDFCBANK': 'NII Growth', 'ICICIBANK': 'Retail', 'SBIN': 'NPAs', 'AXISBANK': 'Deposits',
+    'SUNPHARMA': 'US Mkt', 'CIPLA': 'Generics', 'DRREDDY': 'Pipeline', 'MARUTI': 'SUV Mix',
 }
 
 # ==============================================================================
-# HELPER FUNCTIONS FOR DASHBOARD
+# HELPER FUNCTIONS
 # ==============================================================================
 def load_sentiment_data():
     if not EXCEL_FILE.exists():
@@ -90,7 +87,7 @@ def get_top_positive(n=5):
     return [{'symbol': row['Company'][:3].upper(), 'name': row['Company'], 
              'sector': row.get('Sector', 'Unknown'),
              'score': round(row['Overall_Sentiment'], 2),
-             'keyword': POSITIVE_KEYWORDS.get(row['Company'], 'Strong')} 
+             'keyword': TOP_KEYWORDS.get(row['Company'], 'Strong')} 
             for _, row in top.iterrows()]
 
 def get_top_negative(n=5):
@@ -101,7 +98,7 @@ def get_top_negative(n=5):
     return [{'symbol': row['Company'][:3].upper(), 'name': row['Company'], 
              'sector': row.get('Sector', 'Unknown'),
              'score': round(row['Overall_Sentiment'], 2),
-             'keyword': NEGATIVE_KEYWORDS.get(row['Company'], 'Weak')} 
+             'keyword': TOP_KEYWORDS.get(row['Company'], 'Weak')} 
             for _, row in bottom.iterrows()]
 
 def get_sector_leaders():
@@ -113,6 +110,48 @@ def get_sector_leaders():
     for sector, score in sector_avg.head(5).items():
         results.append({'sector': sector, 'score': round(score, 2)})
     return results
+
+def get_sector_heatmap_data():
+    """Calculate sector-wise sentiment for heatmap"""
+    latest = get_latest_sentiment()
+    if latest is None:
+        return []
+    sector_data = latest.groupby('Sector').agg({
+        'Overall_Sentiment': 'mean',
+        'Company': 'count'
+    }).reset_index()
+    sector_data.columns = ['sector', 'avg_sentiment', 'count']
+    sector_data['avg_sentiment'] = sector_data['avg_sentiment'].round(2)
+    return sector_data.to_dict('records')
+
+def get_sentiment_distribution():
+    """Calculate sentiment distribution for histogram"""
+    latest = get_latest_sentiment()
+    if latest is None:
+        return {'buckets': [], 'mean': 0}
+    
+    # Create buckets from -1 to +1 in steps of 0.2
+    buckets = []
+    ranges = [(-1.0, -0.8), (-0.8, -0.6), (-0.6, -0.4), (-0.4, -0.2), (-0.2, 0.0),
+              (0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0)]
+    
+    for low, high in ranges:
+        count = len(latest[(latest['Overall_Sentiment'] >= low) & (latest['Overall_Sentiment'] < high)])
+        # Determine color based on range
+        if high <= -0.5:
+            color = 'red'
+        elif low >= 0.5:
+            color = 'emerald'
+        elif high <= 0:
+            color = 'rose'
+        elif low >= 0:
+            color = 'teal'
+        else:
+            color = 'amber'
+        buckets.append({'range': f"{low:.1f} to {high:.1f}", 'count': count, 'low': low, 'high': high, 'color': color})
+    
+    mean_val = latest['Overall_Sentiment'].mean()
+    return {'buckets': buckets, 'mean': round(mean_val, 2)}
 
 def get_summary_stats():
     latest = get_latest_sentiment()
@@ -144,6 +183,27 @@ def get_market_mood(avg_score):
         return 'Fear', 'red'
     else:
         return 'Extreme Fear', 'red'
+
+def get_paginated_stocks(page=1, per_page=5):
+    latest = get_latest_sentiment()
+    if latest is None:
+        return [], 0, 0
+    
+    # Add top keyword
+    latest['TopKeyword'] = latest['Company'].map(TOP_KEYWORDS).fillna('N/A')
+    
+    # Sort by sentiment descending
+    latest = latest.sort_values('Overall_Sentiment', ascending=False)
+    
+    total = len(latest)
+    total_pages = (total + per_page - 1) // per_page
+    
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    
+    page_data = latest.iloc[start_idx:end_idx]
+    
+    return page_data.to_dict('records'), total, total_pages
 
 def get_company_time_series(companies):
     df = get_all_data()
@@ -251,10 +311,7 @@ tailwind.config = {
 <div class="text-xl font-bold text-white mt-1">{{ stats.total }}</div>
 </div>
 <div class="text-right">
-<div class="text-emerald-500 font-medium flex items-center justify-end">
-<span class="material-symbols-outlined text-base mr-0.5">monitoring</span>
-Analyzed
-</div>
+<span class="material-symbols-outlined text-primary text-2xl">monitoring</span>
 </div>
 </div>
 <div class="bg-surface-dark p-4 rounded-xl border border-slate-700/50 shadow-sm flex items-center justify-between">
@@ -365,6 +422,60 @@ Analyzed
 </div>
 </section>
 
+<!-- Sector Heatmap & Distribution -->
+<section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+<!-- Sector Heatmap -->
+<div class="lg:col-span-2 bg-surface-dark rounded-xl border border-slate-700/50 p-5 shadow-sm">
+<div class="flex items-center justify-between mb-4">
+<h3 class="text-lg font-bold text-white">Sector Heatmap</h3>
+<div class="flex gap-4 text-[10px] text-slate-400">
+<span class="flex items-center"><div class="w-3 h-3 bg-emerald-500 mr-1 rounded-sm"></div> Bullish (&gt; +0.5)</span>
+<span class="flex items-center"><div class="w-3 h-3 bg-red-500 mr-1 rounded-sm"></div> Bearish (&lt; -0.5)</span>
+</div>
+</div>
+<div id="sectorHeatmap" class="grid grid-cols-4 sm:grid-cols-6 gap-1 min-h-[180px]">
+{% for sector in sector_heatmap %}
+<div class="rounded-sm cursor-pointer hover:ring-2 ring-white relative group flex items-center justify-center min-h-[50px] transition-all
+{% if sector.avg_sentiment >= 0.5 %}bg-emerald-600{% elif sector.avg_sentiment >= 0.3 %}bg-emerald-500{% elif sector.avg_sentiment >= 0.1 %}bg-emerald-400/80{% elif sector.avg_sentiment >= -0.1 %}bg-amber-500/70{% elif sector.avg_sentiment >= -0.3 %}bg-red-400/80{% elif sector.avg_sentiment >= -0.5 %}bg-red-500{% else %}bg-red-600{% endif %}">
+<div class="opacity-0 group-hover:opacity-100 transition-opacity absolute inset-0 flex flex-col items-center justify-center bg-black/60 rounded-sm p-1">
+<span class="text-[9px] font-bold text-white text-center leading-tight">{{ sector.sector }}</span>
+<span class="text-[10px] font-mono text-white">{{ "+%.2f"|format(sector.avg_sentiment) if sector.avg_sentiment >= 0 else "%.2f"|format(sector.avg_sentiment) }}</span>
+</div>
+<span class="text-[8px] font-bold text-white/80 group-hover:opacity-0">{{ sector.sector[:3] }}</span>
+</div>
+{% endfor %}
+</div>
+</div>
+
+<!-- Sentiment Distribution -->
+<div class="bg-surface-dark rounded-xl border border-slate-700/50 p-5 shadow-sm flex flex-col">
+<h3 class="text-lg font-bold text-white mb-4">Sentiment Distribution</h3>
+<div class="flex-1 flex items-end justify-center relative w-full px-2 min-h-[150px]">
+<div class="absolute bottom-6 left-0 right-0 h-px bg-slate-700"></div>
+<div class="flex items-end gap-1 h-32 w-full justify-center">
+{% set max_count = sentiment_dist.buckets|map(attribute='count')|max if sentiment_dist.buckets else 1 %}
+{% for bucket in sentiment_dist.buckets %}
+<div class="flex-1 flex flex-col items-center relative group">
+{% set height_pct = (bucket.count / max_count * 100) if max_count > 0 else 0 %}
+<div class="w-full rounded-t transition-all hover:opacity-80
+{% if bucket.high <= -0.4 %}bg-red-500/80{% elif bucket.high <= 0 %}bg-red-400/60{% elif bucket.low >= 0.4 %}bg-emerald-500/80{% elif bucket.low >= 0 %}bg-emerald-400/60{% else %}bg-amber-400/60{% endif %}"
+style="height:{{ height_pct|int }}%"></div>
+{% if bucket.low <= sentiment_dist.mean < bucket.high %}
+<div class="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-[9px] text-white px-2 py-0.5 rounded border border-slate-600 whitespace-nowrap z-10">Mean</div>
+{% endif %}
+<span class="absolute -bottom-4 text-[8px] text-slate-500 opacity-0 group-hover:opacity-100">{{ bucket.count }}</span>
+</div>
+{% endfor %}
+</div>
+</div>
+<div class="flex justify-between text-xs text-slate-500 mt-6 px-2">
+<span>-1.0</span>
+<span>0.0</span>
+<span>+1.0</span>
+</div>
+</div>
+</section>
+
 <!-- Time Series Chart -->
 <section class="bg-surface-dark rounded-xl border border-slate-700/50 p-6 shadow-lg">
 <div class="flex flex-col xl:flex-row xl:items-center justify-between mb-6 gap-4">
@@ -405,12 +516,22 @@ Analyzed
 <div id="chartLegend" class="flex items-center justify-center gap-6 mt-4 flex-wrap"></div>
 </section>
 
-<!-- All Stocks Table -->
+<!-- Paginated Stock Table -->
 <section class="bg-surface-dark rounded-xl border border-slate-700/50 shadow-sm overflow-hidden mb-12">
 <div class="p-6 border-b border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
 <div>
 <h2 class="text-xl font-bold text-white">All Analyzed Stocks</h2>
 <p class="text-sm text-slate-400">Detailed sentiment breakdown by entity</p>
+</div>
+<div class="flex gap-3">
+<button class="flex items-center gap-2 px-4 py-2 border border-slate-600 rounded-lg text-sm text-slate-300 hover:bg-slate-800 transition-colors">
+<span class="material-symbols-outlined text-sm">filter_list</span>
+Filter
+</button>
+<button onclick="exportExcel()" class="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm transition-colors shadow-lg shadow-emerald-500/20">
+<span class="material-symbols-outlined text-sm">download</span>
+Export Excel
+</button>
 </div>
 </div>
 <div class="overflow-x-auto">
@@ -422,39 +543,18 @@ Analyzed
 <th class="px-6 py-4">Period</th>
 <th class="px-6 py-4 w-64">Sentiment Score (-1 to +1)</th>
 <th class="px-6 py-4 text-center">Polarity</th>
+<th class="px-6 py-4">Top Keyword</th>
 <th class="px-6 py-4">Guidance</th>
 <th class="px-6 py-4 text-right">Risk</th>
 </tr>
 </thead>
-<tbody class="divide-y divide-slate-700 text-sm">
-{% for stock in all_stocks %}
-<tr class="hover:bg-slate-800/50 transition-colors cursor-pointer" onclick="addToChart('{{ stock.Company }}')">
-<td class="px-6 py-4 font-bold text-white">{{ stock.Company }}</td>
-<td class="px-6 py-4 text-slate-400">{{ stock.Sector }}</td>
-<td class="px-6 py-4 text-slate-400">{{ stock.Month }} {{ stock.Year }}</td>
-<td class="px-6 py-4">
-<div class="flex items-center gap-3">
-<span class="font-bold {% if stock.Overall_Sentiment > 0.2 %}text-emerald-500{% elif stock.Overall_Sentiment < -0.1 %}text-red-500{% else %}text-amber-500{% endif %} w-12 text-right font-mono">{{ "+%.2f"|format(stock.Overall_Sentiment) if stock.Overall_Sentiment >= 0 else "%.2f"|format(stock.Overall_Sentiment) }}</span>
-<div class="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden relative">
-<div class="absolute left-1/2 w-0.5 h-full bg-slate-500 opacity-50"></div>
-{% if stock.Overall_Sentiment >= 0 %}
-<div class="h-full bg-emerald-500 absolute left-1/2 rounded-r-full" style="width:{{ (stock.Overall_Sentiment * 50)|int }}%"></div>
-{% else %}
-<div class="h-full bg-red-500 absolute right-1/2 rounded-l-full" style="width:{{ (-stock.Overall_Sentiment * 50)|int }}%"></div>
-{% endif %}
-</div>
-</div>
-</td>
-<td class="px-6 py-4 text-center text-slate-300 font-mono">{{ "%.3f"|format(stock.Polarity) }}</td>
-<td class="px-6 py-4 {% if stock.Guidance > 0 %}text-emerald-500{% elif stock.Guidance < 0 %}text-red-500{% else %}text-slate-400{% endif %} font-medium">
-{% if stock.Guidance > 0 %}Raised{% elif stock.Guidance < 0 %}Lowered{% else %}Maintained{% endif %}
-</td>
-<td class="px-6 py-4 text-right {% if stock.Risk > 0.7 %}text-red-500 font-bold{% elif stock.Risk > 0.4 %}text-amber-500{% else %}text-slate-400{% endif %}">{{ "%.2f"|format(stock.Risk) }}</td>
-</tr>
-{% endfor %}
-{% if not all_stocks %}<tr><td colspan="7" class="py-8 text-center text-slate-500">No data available.</td></tr>{% endif %}
+<tbody id="stockTableBody" class="divide-y divide-slate-700 text-sm">
 </tbody>
 </table>
+</div>
+<div class="px-6 py-4 border-t border-slate-700 flex items-center justify-between text-sm text-slate-400">
+<span id="paginationInfo">Showing 1–5 of {{ stats.total }} Stocks</span>
+<div id="paginationControls" class="flex items-center gap-1"></div>
 </div>
 </section>
 
@@ -467,7 +567,86 @@ const CHART_COLORS = ['#22d3ee', '#a3e635', '#f59e0b', '#ec4899', '#8b5cf6', '#1
 let selectedStocks = [];
 let chartInstance = null;
 let stockTimeSeriesData = {};
+let currentPage = 1;
+const perPage = 5;
+let totalStocks = {{ stats.total }};
 
+// ==================== PAGINATION ====================
+function loadStockTable(page = 1) {
+    currentPage = page;
+    fetch(`/api/stocks?page=${page}&per_page=${perPage}`)
+        .then(res => res.json())
+        .then(data => {
+            renderStockTable(data.stocks);
+            updatePagination(data.total, data.total_pages, page);
+        })
+        .catch(err => console.error('Error loading stocks:', err));
+}
+
+function renderStockTable(stocks) {
+    const tbody = document.getElementById('stockTableBody');
+    tbody.innerHTML = stocks.map(stock => {
+        const score = stock.Overall_Sentiment;
+        const scoreClass = score > 0.2 ? 'text-emerald-500' : (score < -0.1 ? 'text-red-500' : 'text-amber-500');
+        const guidanceText = stock.Guidance > 0 ? 'Raised' : (stock.Guidance < 0 ? 'Lowered' : 'Maintained');
+        const guidanceClass = stock.Guidance > 0 ? 'text-emerald-500' : (stock.Guidance < 0 ? 'text-red-500' : 'text-slate-400');
+        const riskClass = stock.Risk > 0.7 ? 'text-red-500 font-bold' : (stock.Risk > 0.4 ? 'text-amber-500' : 'text-slate-400');
+        
+        const barWidth = Math.abs(score) * 50;
+        const barClass = score >= 0 ? 'bg-emerald-500' : 'bg-red-500';
+        const barPosition = score >= 0 ? 'left-1/2' : 'right-1/2';
+        const barRound = score >= 0 ? 'rounded-r-full' : 'rounded-l-full';
+        
+        return `
+        <tr class="hover:bg-slate-800/50 transition-colors cursor-pointer" onclick="addToChart('${stock.Company}')">
+            <td class="px-6 py-4 font-bold text-white">${stock.Company}</td>
+            <td class="px-6 py-4 text-slate-400">${stock.Sector || 'Unknown'}</td>
+            <td class="px-6 py-4 text-slate-400">${stock.Month} ${stock.Year}</td>
+            <td class="px-6 py-4">
+                <div class="flex items-center gap-3">
+                    <span class="font-bold ${scoreClass} w-12 text-right font-mono">${score >= 0 ? '+' : ''}${score.toFixed(2)}</span>
+                    <div class="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden relative">
+                        <div class="absolute left-1/2 w-0.5 h-full bg-slate-500 opacity-50"></div>
+                        <div class="h-full ${barClass} absolute ${barPosition} ${barRound}" style="width:${barWidth}%"></div>
+                    </div>
+                </div>
+            </td>
+            <td class="px-6 py-4 text-center text-slate-300 font-mono">${(stock.Polarity || 0).toFixed(3)}</td>
+            <td class="px-6 py-4">
+                <span class="px-2 py-1 bg-slate-700 rounded text-xs text-slate-300">${stock.TopKeyword || 'N/A'}</span>
+            </td>
+            <td class="px-6 py-4 ${guidanceClass} font-medium">${guidanceText}</td>
+            <td class="px-6 py-4 text-right ${riskClass}">${(stock.Risk || 0).toFixed(2)}</td>
+        </tr>`;
+    }).join('');
+}
+
+function updatePagination(total, totalPages, currentPage) {
+    const start = (currentPage - 1) * perPage + 1;
+    const end = Math.min(currentPage * perPage, total);
+    document.getElementById('paginationInfo').textContent = `Showing ${start}–${end} of ${total} Stocks`;
+    
+    const controls = document.getElementById('paginationControls');
+    let html = `<button onclick="loadStockTable(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''} class="px-3 py-1 border border-slate-700 rounded hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">Prev</button>`;
+    
+    for (let i = 1; i <= Math.min(totalPages, 5); i++) {
+        if (i === currentPage) {
+            html += `<button class="px-3 py-1 bg-primary text-white rounded">${i}</button>`;
+        } else {
+            html += `<button onclick="loadStockTable(${i})" class="px-3 py-1 border border-slate-700 rounded hover:bg-slate-800">${i}</button>`;
+        }
+    }
+    
+    html += `<button onclick="loadStockTable(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''} class="px-3 py-1 border border-slate-700 rounded hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">Next</button>`;
+    
+    controls.innerHTML = html;
+}
+
+function exportExcel() {
+    window.location.href = '/api/export';
+}
+
+// ==================== CHART FUNCTIONS ====================
 function addToChart(stockName) {
     if (!selectedStocks.includes(stockName)) {
         selectedStocks.push(stockName);
@@ -541,7 +720,6 @@ function renderChart() {
     const canvas = document.getElementById('sentimentChart');
     canvas.classList.remove('hidden');
 
-    // Collect all unique periods
     let allPeriods = new Set();
     Object.values(stockTimeSeriesData).forEach(series => {
         series.forEach(d => allPeriods.add(d.period));
@@ -599,7 +777,6 @@ function renderChart() {
         }
     });
 
-    // Update legend
     const legendContainer = document.getElementById('chartLegend');
     legendContainer.innerHTML = selectedStocks.map((stock, idx) => {
         const series = stockTimeSeriesData[stock] || [];
@@ -615,8 +792,9 @@ function renderChart() {
     }).join('');
 }
 
-// Initialize with empty chart
+// Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+    loadStockTable(1);
     updateSelectedStocksUI();
 });
 </script>
@@ -625,8 +803,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 @app.route('/')
 def dashboard():
-    df = load_sentiment_data()
-    all_stocks = df.to_dict('records') if df is not None and not df.empty else []
     stats = get_summary_stats()
     mood, mood_color = get_market_mood(stats['avg_score'])
     
@@ -634,12 +810,25 @@ def dashboard():
         top_positive=get_top_positive(5),
         top_negative=get_top_negative(5),
         sector_leaders=get_sector_leaders(),
+        sector_heatmap=get_sector_heatmap_data(),
+        sentiment_dist=get_sentiment_distribution(),
         stats=stats,
         mood=mood,
         mood_color=mood_color,
-        all_stocks=all_stocks,
         all_companies=get_all_companies()
     )
+
+@app.route('/api/stocks')
+def api_stocks():
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 5))
+    stocks, total, total_pages = get_paginated_stocks(page, per_page)
+    return jsonify({
+        'stocks': stocks,
+        'total': total,
+        'total_pages': total_pages,
+        'current_page': page
+    })
 
 @app.route('/api/data')
 def api_data():
@@ -649,6 +838,8 @@ def api_data():
         'top_positive': get_top_positive(5),
         'top_negative': get_top_negative(5),
         'sector_leaders': get_sector_leaders(),
+        'sector_heatmap': get_sector_heatmap_data(),
+        'sentiment_distribution': get_sentiment_distribution(),
         'stats': stats,
         'mood': mood,
         'all_companies': get_all_companies()
@@ -659,6 +850,34 @@ def api_timeseries():
     companies = request.args.get('companies', '').split(',')
     companies = [c.strip() for c in companies if c.strip()]
     return jsonify(get_company_time_series(companies))
+
+@app.route('/api/export')
+def api_export():
+    """Export current data to Excel"""
+    latest = get_latest_sentiment()
+    if latest is None:
+        return jsonify({'error': 'No data available'}), 404
+    
+    # Add top keyword
+    latest['TopKeyword'] = latest['Company'].map(TOP_KEYWORDS).fillna('N/A')
+    
+    # Select relevant columns
+    export_cols = ['Company', 'Sector', 'Year', 'Month', 'Overall_Sentiment', 
+                   'Polarity', 'Keyword_Sentiment', 'Guidance', 'Risk', 'TopKeyword']
+    export_df = latest[[c for c in export_cols if c in latest.columns]]
+    
+    # Create Excel file in memory
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        export_df.to_excel(writer, sheet_name='Sentiment Analysis', index=False)
+    output.seek(0)
+    
+    return send_file(
+        output,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='sentiment_analysis_export.xlsx'
+    )
 
 @app.route('/health')
 def health():
