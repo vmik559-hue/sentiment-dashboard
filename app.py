@@ -436,23 +436,10 @@ tailwind.config = {
 <h3 class="text-lg font-bold text-white">Sector Heatmap</h3>
 <div class="flex gap-4 text-[10px] text-slate-400">
 <span class="flex items-center"><div class="w-3 h-3 bg-emerald-500 mr-1 rounded-sm"></div> Bullish (&gt; +0.5)</span>
-<span class="flex items-center"><div class="w-3 h-3 bg-red-500 mr-1 rounded-sm"></div> Bearish (&lt; -0.5)</span>
+<span class="flex items-center"><div class="w-3 h-3 bg-amber-500 mr-1 rounded-sm"></div> Bearish (&lt; -0.5)</span>
 </div>
 </div>
-<div id="sectorHeatmap" class="flex flex-wrap gap-1 min-h-[180px]">
-{% for sector in sector_heatmap %}
-<div class="rounded-sm cursor-pointer hover:ring-2 ring-white relative group flex items-center justify-center transition-all
-{% if sector.avg_sentiment >= 0.5 %}bg-emerald-600{% elif sector.avg_sentiment >= 0.3 %}bg-emerald-500{% elif sector.avg_sentiment >= 0.1 %}bg-emerald-400{% elif sector.avg_sentiment >= -0.1 %}bg-amber-500{% elif sector.avg_sentiment >= -0.3 %}bg-red-400{% elif sector.avg_sentiment >= -0.5 %}bg-red-500{% else %}bg-red-600{% endif %}"
-style="width: {{ sector.size_ratio * 1.2 }}px; height: {{ sector.size_ratio }}px; min-width: 60px; min-height: 45px;">
-<div class="opacity-0 group-hover:opacity-100 transition-opacity absolute inset-0 flex flex-col items-center justify-center bg-black/70 rounded-sm p-1 z-10">
-<span class="text-[10px] font-bold text-white text-center leading-tight">{{ sector.sector }}</span>
-<span class="text-[11px] font-mono text-white font-bold">{{ "+%.2f"|format(sector.avg_sentiment) if sector.avg_sentiment >= 0 else "%.2f"|format(sector.avg_sentiment) }}</span>
-<span class="text-[8px] text-slate-300">{{ sector.count }} stocks</span>
-</div>
-<span class="text-[9px] font-bold text-white/90 group-hover:opacity-0 text-center px-1">{{ sector.sector[:4] }}</span>
-</div>
-{% endfor %}
-</div>
+<div id="sectorHeatmapContainer" class="min-h-[220px]"></div>
 </div>
 
 <!-- Sentiment Distribution -->
@@ -800,10 +787,64 @@ function renderChart() {
     }).join('');
 }
 
+// ==================== SECTOR HEATMAP TREEMAP ====================
+const sectorData = {{ sector_heatmap | tojson }};
+
+function getColor(sentiment) {
+    if (sentiment >= 0.5) return '#059669';  // emerald-600
+    if (sentiment >= 0.3) return '#10b981';  // emerald-500
+    if (sentiment >= 0.1) return '#34d399';  // emerald-400
+    if (sentiment >= -0.1) return '#fbbf24'; // amber-400
+    if (sentiment >= -0.3) return '#f59e0b'; // amber-500
+    if (sentiment >= -0.5) return '#f97316'; // orange-500
+    return '#ef4444'; // red-500
+}
+
+function renderSectorHeatmap() {
+    const container = document.getElementById('sectorHeatmapContainer');
+    if (!container || sectorData.length === 0) return;
+    
+    // Sort by count descending for treemap layout
+    const sorted = [...sectorData].sort((a, b) => b.count - a.count);
+    const totalCount = sorted.reduce((sum, s) => sum + s.count, 0);
+    
+    // Container dimensions
+    const containerWidth = container.offsetWidth || 600;
+    const containerHeight = 220;
+    
+    // Simple treemap layout - slice and dice
+    let html = '<div class="flex flex-wrap gap-1" style="height: ' + containerHeight + 'px;">';
+    
+    // Calculate widths proportionally
+    sorted.forEach((sector, idx) => {
+        const ratio = sector.count / totalCount;
+        const width = Math.max(60, Math.floor(containerWidth * ratio * 1.8));
+        const height = sector.count >= 4 ? 90 : (sector.count >= 2 ? 60 : 45);
+        const fontSize = sector.count >= 4 ? '14px' : (sector.count >= 2 ? '11px' : '10px');
+        const color = getColor(sector.avg_sentiment);
+        const label = sector.sector.substring(0, 4);
+        
+        html += `
+        <div class="rounded cursor-pointer hover:ring-2 ring-white relative group flex items-center justify-center transition-all"
+             style="width: ${width}px; height: ${height}px; background-color: ${color}; flex-shrink: 0;">
+            <div class="opacity-0 group-hover:opacity-100 transition-opacity absolute inset-0 flex flex-col items-center justify-center bg-black/70 rounded p-1 z-10">
+                <span class="text-xs font-bold text-white text-center">${sector.sector}</span>
+                <span class="text-sm font-mono text-white font-bold">${sector.avg_sentiment >= 0 ? '+' : ''}${sector.avg_sentiment.toFixed(2)}</span>
+                <span class="text-[9px] text-slate-300">${sector.count} stocks</span>
+            </div>
+            <span class="font-bold text-white/90 group-hover:opacity-0" style="font-size: ${fontSize};">${label}</span>
+        </div>`;
+    });
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     loadStockTable(1);
     updateSelectedStocksUI();
+    renderSectorHeatmap();
 });
 </script>
 
