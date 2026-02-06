@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sentiment-dashboard
+    env: docker
+    plan: free
+    region: oregon # us-west is usually good/default
+    buildCommand: docker build -t sentiment-dashboard .
+    startCommand: gunicorn unified_app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300
+    envVars:
+      - key: PORT
+        value: 10000
