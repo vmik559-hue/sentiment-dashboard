@@ -1,4 +1,8 @@
-# Sentiment Pipeline - Railway Deployment
+# Sentiment Pipeline - Railway Deployment (Optimized for Free Tier)
+
+# Use CPU-only PyTorch to reduce image size from ~4GB to ~700MB
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # Core
 flask>=2.0.0
 gunicorn>=21.0.0
@@ -18,8 +22,6 @@ pdfplumber>=0.10.0
 # NLP - Basic (fallback)
 textblob>=0.15.0
 
-# NLP - FinBERT (for production sentiment analysis)
-# Note: These are large dependencies (~2GB total)
-# Railway Pro can handle this
+# NLP - FinBERT (CPU-only version for Railway free tier)
 transformers>=4.30.0
 torch>=2.0.0
