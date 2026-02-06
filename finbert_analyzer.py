@@ -61,11 +61,13 @@ class FinBERTAnalyzer:
     """
     Financial sentiment analyzer using FinBERT model.
     Processes PDF transcripts directly from URLs (no disk writes).
+    Uses lazy loading for the model to allow fast app startup.
     """
     
     def __init__(self, model_name: str = "ProsusAI/finbert", use_gpu: bool = False):
         """
         Initialize the FinBERT analyzer.
+        Model loading is deferred until first use for fast startup.
         
         Args:
             model_name: HuggingFace model name (default: ProsusAI/finbert)
@@ -73,7 +75,8 @@ class FinBERTAnalyzer:
         """
         self.model_name = model_name
         self.use_finbert = FINBERT_AVAILABLE
-        self.device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
+        self.use_gpu = use_gpu
+        self._device = None
         
         # HTTP settings
         self.base_url = "https://www.screener.in"
@@ -83,15 +86,12 @@ class FinBERTAnalyzer:
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         }
         
-        # Load FinBERT model
-        if self.use_finbert:
-            logger.info(f"Loading FinBERT model: {model_name} on {self.device}")
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
-            self.model.to(self.device)
-            self.model.eval()
-            logger.info("FinBERT model loaded successfully")
-        else:
+        # Lazy-loaded model components (loaded on first use)
+        self._tokenizer = None
+        self._model = None
+        self._model_loaded = False
+        
+        if not self.use_finbert:
             logger.warning("Using TextBlob fallback (FinBERT not available)")
         
         # Financial keywords for enhanced analysis
@@ -107,6 +107,38 @@ class FinBERTAnalyzer:
             'miss', 'delay', 'slow', 'struggle', 'downturn', 'volatile',
             'cautious', 'bearish', 'downgrade'
         ]
+    
+    @property
+    def device(self):
+        """Get device for PyTorch (lazy initialization)."""
+        if self._device is None:
+            self._device = "cuda" if self.use_gpu and torch.cuda.is_available() else "cpu"
+        return self._device
+    
+    @property
+    def tokenizer(self):
+        """Get tokenizer (lazy loading)."""
+        self._ensure_model_loaded()
+        return self._tokenizer
+    
+    @property
+    def model(self):
+        """Get model (lazy loading)."""
+        self._ensure_model_loaded()
+        return self._model
+    
+    def _ensure_model_loaded(self):
+        """Load the FinBERT model if not already loaded (lazy loading)."""
+        if self._model_loaded or not self.use_finbert:
+            return
+        
+        logger.info(f"Loading FinBERT model: {self.model_name} on {self.device}")
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self._model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+        self._model.to(self.device)
+        self._model.eval()
+        self._model_loaded = True
+        logger.info("FinBERT model loaded successfully")
     
     def _fetch_url(self, url: str, timeout: int = 60) -> Optional[bytes]:
         """Fetch content from URL."""
