@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Indian Stock Market Sentiment Terminal</title>
+    <link href="https://fonts.googleapis.com" rel="preconnect" />
+    <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+        rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+    <script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    fontFamily: { sans: ["Inter", "sans-serif"], mono: ["JetBrains Mono", "monospace"] },
+                    colors: {
+                        background: { light: "#f3f4f6", dark: "#0f172a" },
+                        surface: { light: "#ffffff", dark: "#1e293b", darker: "#0b1120" },
+                        primary: "#3b82f6",
+                        accent: { green: "#10b981", red: "#ef4444", amber: "#f59e0b" }
+                    },
+                },
+            },
+        };
+    </script>
+    <style>
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+        }
+    </style>
+</head>
+
+<body class="bg-background-dark text-slate-200 font-sans min-h-screen selection:bg-primary selection:text-white pb-12">
+
+    <header class="sticky top-0 z-50 bg-surface-darker/90 backdrop-blur-md border-b border-slate-800">
+        <div class="max-w-[1600px] mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <div
+                    class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center shadow-lg shadow-blue-500/20">
+                    <span class="material-symbols-outlined text-white">analytics</span>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight text-white leading-none">Indian Stock Market Sentiment
+                        Terminal</h1>
+                    <p class="text-xs text-slate-400 mt-1">FinBERT Analysis • Nifty 500 Universe</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <span class="text-xs text-slate-400">Last run: {{ last_run }}</span>
+                <button onclick="runIncremental()"
+                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
+                    <span class="material-symbols-outlined text-sm">play_arrow</span> Run New
+                </button>
+                <button onclick="runFull()"
+                    class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
+                    <span class="material-symbols-outlined text-sm">refresh</span> Full Re-Run
+                </button>
+                <button onclick="showAddCompany()"
+                    class="px-4 py-2 border border-slate-600 hover:bg-slate-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
+                    <span class="material-symbols-outlined text-sm">add</span> Add Company
+                </button>
+                <button onclick="showUpload()"
+                    class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
+                    <span class="material-symbols-outlined text-sm">upload_file</span> Upload & Analyze PDFs
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Processing Status -->
+    <div id="processingStatus"
+        class="{% if not processing.running %}hidden{% endif %} bg-blue-900/30 border-b border-blue-700">
+        <div class="max-w-[1600px] mx-auto px-4 py-3">
+            <div class="flex items-center gap-3">
+                <div class="animate-spin w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full"></div>
+                <span id="statusText" class="text-blue-300">{{ processing.current_company or 'Starting...' }}</span>
+                <span class="text-slate-400">{{ processing.progress }}/{{ processing.total }}</span>
+            </div>
+            <div class="mt-2 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                <div id="progressBar" class="h-full bg-blue-500 transition-all"
+                    style="width: {{ (processing.progress / processing.total * 100) if processing.total > 0 else 0 }}%">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <main class="max-w-[1600px] mx-auto px-4 mt-6 space-y-6">
+
+        <!-- Market Overview Cards -->
+        <section class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div
+                class="bg-surface-dark p-4 rounded-xl border border-slate-700/50 shadow-sm flex items-center justify-between">
+                <div>
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Stocks</span>
+                    <div class="text-xl font-bold text-white mt-1">{{ stats.total }}</div>
+                </div>
+                <div class="text-right"><span class="material-symbols-outlined text-primary text-2xl">monitoring</span>
+                </div>
+            </div>
+            <div
+                class="bg-surface-dark p-4 rounded-xl border border-slate-700/50 shadow-sm flex items-center justify-between">
+                <div>
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Positive</span>
+                    <div class="text-xl font-bold text-emerald-400 mt-1">{{ stats.positive }}</div>
+                </div>
+                <div class="text-right"><span
+                        class="material-symbols-outlined text-emerald-500 text-2xl">trending_up</span></div>
+            </div>
+            <div
+                class="bg-surface-dark p-4 rounded-xl border border-slate-700/50 shadow-sm flex items-center justify-between">
+                <div>
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Negative</span>
+                    <div class="text-xl font-bold text-red-400 mt-1">{{ stats.negative }}</div>
+                </div>
+                <div class="text-right"><span
+                        class="material-symbols-outlined text-red-500 text-2xl">trending_down</span></div>
+            </div>
+            <div
+                class="bg-surface-dark p-4 rounded-xl border border-slate-700/50 shadow-sm flex items-center gap-4 relative overflow-hidden group">
+                <div class="absolute right-0 top-0 bottom-0 w-1 bg-{{ mood_color }}-500"></div>
+                <div class="p-3 bg-{{ mood_color }}-500/10 rounded-full">
+                    <span class="material-symbols-outlined text-{{ mood_color }}-500 text-2xl">speed</span>
+                </div>
+                <div>
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Market Mood</span>
+                    <div class="text-xl font-bold text-{{ mood_color }}-500 mt-1">{{ mood }}</div>
+                    <span class="text-xs text-slate-500">Score: {{ stats.avg_score }}</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Top Sentiment Cards -->
+        <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Top Positive -->
+            <div class="bg-surface-dark rounded-xl border border-slate-700/50 p-5 shadow-sm flex flex-col h-[380px]">
+                <div class="flex items-center justify-between mb-4 border-b border-slate-700 pb-2">
+                    <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Top Positive Sentiment</h3>
+                    <span class="material-symbols-outlined text-emerald-500 text-lg">arrow_upward</span>
+                </div>
+                <div class="space-y-3 overflow-y-auto pr-2">
+                    {% for stock in top_positive %}
+                    <div class="flex items-center justify-between group cursor-pointer hover:bg-slate-800/50 p-2 rounded-lg transition-colors"
+                        onclick="addToChart('{{ stock.name }}')">
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="w-8 h-8 rounded bg-slate-700 flex items-center justify-center text-[10px] font-bold">
+                                {{ stock.symbol }}</div>
+                            <div>
+                                <div class="text-sm font-semibold text-white">{{ stock.name }}</div>
+                                <div class="text-xs text-emerald-500">{{ stock.sector }}</div>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-sm font-bold text-emerald-400 font-mono">{{ "+%.2f"|format(stock.score) if
+                                stock.score >= 0 else "%.2f"|format(stock.score) }}</div>
+                            <div class="w-16 h-1 bg-slate-700 rounded-full mt-1">
+                                <div class="h-full bg-emerald-500 rounded-full"
+                                    style="width:{{ ((stock.score + 1) / 2 * 100)|int }}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if not top_positive %}<p class="p-4 text-slate-500 text-sm">No data available.</p>{% endif %}
+                </div>
+            </div>
+
+            <!-- Top Negative -->
+            <div class="bg-surface-dark rounded-xl border border-slate-700/50 p-5 shadow-sm flex flex-col h-[380px]">
+                <div class="flex items-center justify-between mb-4 border-b border-slate-700 pb-2">
+                    <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Top Negative Risks</h3>
+                    <span class="material-symbols-outlined text-red-500 text-lg">priority_high</span>
+                </div>
+                <div class="space-y-3 overflow-y-auto pr-2">
+                    {% for stock in top_negative %}
+                    <div class="flex items-center justify-between group cursor-pointer hover:bg-slate-800/50 p-2 rounded-lg transition-colors"
+                        onclick="addToChart('{{ stock.name }}')">
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="w-8 h-8 rounded bg-slate-700 flex items-center justify-center text-[10px] font-bold">
+                                {{ stock.symbol }}</div>
+                            <div>
+                                <div class="text-sm font-semibold text-white">{{ stock.name }}</div>
+                                <div class="text-xs text-red-400">{{ stock.sector }}</div>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-sm font-bold text-red-400 font-mono">{{ "%.2f"|format(stock.score) }}</div>
+                            <div class="w-16 h-1 bg-slate-700 rounded-full mt-1">
+                                <div class="h-full bg-red-500 rounded-full ml-auto"
+                                    style="width:{{ ((1 - stock.score) / 2 * 100)|int }}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if not top_negative %}<p class="p-4 text-slate-500 text-sm">No data available.</p>{% endif %}
+                </div>
+            </div>
+
+            <!-- Sector Leaders -->
+            <div class="bg-surface-dark rounded-xl border border-slate-700/50 p-5 shadow-sm flex flex-col h-[380px]">
+                <div class="flex items-center justify-between mb-4 border-b border-slate-700 pb-2">
+                    <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Sector Leaders</h3>
+                    <span class="material-symbols-outlined text-primary text-lg">pie_chart</span>
+                </div>
+                <div class="space-y-4 overflow-y-auto pr-2">
+                    {% for sector in sector_leaders %}
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm text-slate-300">{{ sector.sector }}</span>
+                        <div class="flex items-center gap-2">
+                            <div class="w-24 h-2 bg-slate-700 rounded-full overflow-hidden">
+                                <div class="h-full {% if sector.score >= 0 %}bg-emerald-500{% else %}bg-red-500{% endif %}"
+                                    style="width:{{ ((sector.score + 1) / 2 * 100)|int }}%"></div>
+                            </div>
+                            <span class="text-xs font-mono text-white w-12 text-right">{{ "+%.2f"|format(sector.score)
+                                if sector.score >= 0 else "%.2f"|format(sector.score) }}</span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if not sector_leaders %}<p class="p-4 text-slate-500 text-sm">No data available.</p>{% endif %}
+                </div>
+            </div>
+        </section>
+
+        <!-- Sector Heatmap -->
+        <section class="bg-surface-dark rounded-xl border border-slate-700/50 p-5 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-bold text-white">Sector Heatmap</h3>
+                <div class="flex gap-4 text-[10px] text-slate-400">
+                    <span class="flex items-center">
+                        <div class="w-3 h-3 bg-emerald-500 mr-1 rounded-sm"></div> Bullish (> +0.2)
+                    </span>
+                    <span class="flex items-center">
+                        <div class="w-3 h-3 bg-red-500 mr-1 rounded-sm"></div> Bearish (< -0.1)</span>
+                </div>
+            </div>
+            <div id="sectorHeatmapContainer" class="flex flex-wrap gap-2 min-h-[150px]">
+                {% for sector in sector_heatmap %}
+                <div class="px-3 py-2 rounded-lg text-xs font-medium cursor-pointer transition-all hover:scale-105
+{% if sector.avg_sentiment >= 0.2 %}bg-emerald-500/80 text-white{% elif sector.avg_sentiment < -0.1 %}bg-red-500/80 text-white{% else %}bg-amber-500/60 text-white{% endif %}"
+                    style="min-width: {{ sector.size_ratio }}px">
+                    <div class="font-bold">{{ sector.sector }}</div>
+                    <div class="opacity-80">{{ sector.avg_sentiment }} ({{ sector.count }})</div>
+                </div>
+                {% endfor %}
+                {% if not sector_heatmap %}<p class="p-4 text-slate-500 text-sm">No data available.</p>{% endif %}
+            </div>
+        </section>
+
+        <!-- Sentiment Changes Alert -->
+        <section
+            class="bg-gradient-to-r from-red-900/30 via-amber-900/20 to-emerald-900/30 rounded-xl border border-amber-500/50 p-5 shadow-lg">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-3">
+                    <span class="material-symbols-outlined text-amber-400 text-2xl animate-pulse">warning</span>
+                    <h3 class="text-lg font-bold text-white">Sentiment Change Alerts</h3>
+                    <span class="text-xs bg-amber-500/30 text-amber-300 px-2 py-1 rounded-full">{{
+                        sentiment_changes|length }} stocks</span>
+                </div>
+                <span class="text-xs text-slate-400">Stocks with significant sentiment changes</span>
+            </div>
+            {% if sentiment_changes %}
+            <div class="overflow-x-auto max-h-[300px] overflow-y-auto">
+                <table class="w-full text-sm">
+                    <thead class="sticky top-0 bg-slate-800/90 backdrop-blur">
+                        <tr class="text-left text-slate-400 border-b border-slate-700">
+                            <th class="py-2 px-3">Company</th>
+                            <th class="py-2 px-3">Sector</th>
+                            <th class="py-2 px-3 text-center">Previous</th>
+                            <th class="py-2 px-3 text-center">Current</th>
+                            <th class="py-2 px-3 text-center">Change</th>
+                            <th class="py-2 px-3 text-center">Direction</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for change in sentiment_changes %}
+                        <tr
+                            class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors
+                            {% if change.direction == 'downgrade' %}bg-red-900/20{% else %}bg-emerald-900/20{% endif %}">
+                            <td class="py-3 px-3">
+                                <div class="flex items-center gap-2">
+                                    <div
+                                        class="w-8 h-8 rounded bg-slate-700 flex items-center justify-center text-[10px] font-bold text-white">
+                                        {{ change.symbol }}
+                                    </div>
+                                    <div>
+                                        <div class="font-semibold text-white">{{ change.company }}</div>
+                                        <div class="text-[10px] text-slate-500">{{ change.old_period }} → {{
+                                            change.new_period }}</div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="py-3 px-3 text-slate-400">{{ change.sector }}</td>
+                            <td class="py-3 px-3 text-center">
+                                <span
+                                    class="px-2 py-1 rounded text-xs font-mono
+                                    {% if change.old_category == 'Positive' %}bg-emerald-500/20 text-emerald-400{% else %}bg-red-500/20 text-red-400{% endif %}">
+                                    {{ change.old_score }}
+                                </span>
+                            </td>
+                            <td class="py-3 px-3 text-center">
+                                <span
+                                    class="px-2 py-1 rounded text-xs font-mono
+                                    {% if change.new_category == 'Positive' %}bg-emerald-500/20 text-emerald-400{% else %}bg-red-500/20 text-red-400{% endif %}">
+                                    {{ change.new_score }}
+                                </span>
+                            </td>
+                            <td class="py-3 px-3 text-center">
+                                <span class="px-2 py-1 rounded text-xs font-mono font-bold
+                                    {% if change.change > 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
+                                    {{ "+%.2f"|format(change.change) if change.change > 0 else
+                                    "%.2f"|format(change.change) }}
+                                </span>
+                            </td>
+                            <td class="py-3 px-3 text-center">
+                                {% if change.direction == 'downgrade' %}
+                                <span
+                                    class="inline-flex items-center gap-1 px-2 py-1 bg-red-500/20 text-red-400 rounded text-xs">
+                                    <span class="material-symbols-outlined text-sm">trending_down</span> Downgrade
+                                </span>
+                                {% else %}
+                                <span
+                                    class="inline-flex items-center gap-1 px-2 py-1 bg-emerald-500/20 text-emerald-400 rounded text-xs">
+                                    <span class="material-symbols-outlined text-sm">trending_up</span> Upgrade
+                                </span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="text-center py-8 text-slate-500">
+                <span class="material-symbols-outlined text-4xl mb-2">check_circle</span>
+                <p>No significant sentiment changes detected between periods.</p>
+                <p class="text-xs mt-1">Changes appear when stocks shift between Positive/Neutral/Negative categories or
+                    change by >0.1</p>
+            </div>
+            {% endif %}
+        </section>
+
+        <!-- Time Series Chart -->
+        <section class="bg-surface-dark rounded-xl border border-slate-700/50 p-6 shadow-lg">
+            <div class="flex flex-col xl:flex-row xl:items-center justify-between mb-6 gap-4">
+                <div>
+                    <h2 class="text-xl font-bold text-white">Sentiment Time Series</h2>
+                    <p class="text-sm text-slate-400">Compare multiple stocks over time</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <div class="flex-1 xl:flex-none flex items-center gap-3">
+                        <div class="relative group w-full xl:w-96">
+                            <div id="stockSelector"
+                                class="flex flex-wrap items-center gap-2 p-2 bg-slate-900 border border-slate-700 rounded-lg min-h-[42px] cursor-text"
+                                onclick="document.getElementById('stockInput').focus()">
+                                <span class="text-slate-400 pointer-events-none"><span
+                                        class="material-symbols-outlined text-sm">search</span></span>
+                                <div id="selectedStocks" class="flex flex-wrap gap-1"></div>
+                                <input id="stockInput"
+                                    class="flex-1 bg-transparent border-none text-sm text-white focus:ring-0 p-0 min-w-[100px] placeholder:text-slate-500"
+                                    placeholder="Add stock..." type="text" list="stockList"
+                                    onkeydown="handleStockInput(event)" />
+                                <datalist id="stockList">
+                                    {% for company in all_companies %}<option value="{{ company }}">{% endfor %}
+                                </datalist>
+                            </div>
+                        </div>
+                        <button onclick="addStockFromInput()"
+                            class="px-3 py-2 bg-primary hover:bg-blue-600 text-white rounded-lg text-sm font-medium flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">add</span> Add
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div id="chartContainer"
+                class="relative w-full h-[350px] bg-surface-darker rounded-lg border border-slate-800/50 p-4">
+                <div id="chartLoading" class="absolute inset-0 flex items-center justify-center text-slate-500">
+                    <span>Select stocks to view time series...</span>
+                </div>
+                <canvas id="sentimentChart" class="hidden"></canvas>
+            </div>
+            <div id="chartLegend" class="flex items-center justify-center gap-6 mt-4 flex-wrap"></div>
+        </section>
+
+        <!-- Paginated Stock Table -->
+        <section class="bg-surface-dark rounded-xl border border-slate-700/50 shadow-sm overflow-hidden mb-12">
+            <div class="p-6 border-b border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h2 class="text-xl font-bold text-white">All Analyzed Stocks</h2>
+                    <p class="text-sm text-slate-400">Detailed sentiment breakdown by entity</p>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="exportExcel()"
+                        class="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm transition-colors shadow-lg shadow-emerald-500/20">
+                        <span class="material-symbols-outlined text-sm">download</span> Export Excel
+                    </button>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr
+                            class="border-b border-slate-700 text-xs uppercase tracking-wider text-slate-400 font-medium">
+                            <th class="px-6 py-4">Company</th>
+                            <th class="px-6 py-4">Sector</th>
+                            <th class="px-6 py-4">Period</th>
+                            <th class="px-6 py-4 w-64">Sentiment Score (-1 to +1)</th>
+                            <th class="px-6 py-4 text-center">Polarity</th>
+                            <th class="px-6 py-4">Top Keyword</th>
+                            <th class="px-6 py-4">Guidance</th>
+                            <th class="px-6 py-4 text-right">Risk</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stockTableBody" class="divide-y divide-slate-700 text-sm"></tbody>
+                </table>
+            </div>
+            <div class="px-6 py-4 border-t border-slate-700 flex items-center justify-between text-sm text-slate-400">
+                <span id="paginationInfo">Showing 1-5 of {{ stats.total }} Stocks</span>
+                <div id="paginationControls" class="flex items-center gap-1"></div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Add Company Modal -->
+    <div id="addCompanyModal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div class="bg-surface-dark rounded-xl p-6 w-full max-w-md border border-slate-700">
+            <h3 class="text-lg font-bold text-white mb-4">Add Custom Company</h3>
+            <form id="addCompanyForm" class="space-y-4">
+                <div><label class="block text-sm text-slate-400 mb-1">Company Name</label>
+                    <input type="text" id="companyName"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white" required />
+                </div>
+                <div><label class="block text-sm text-slate-400 mb-1">NSE Code</label>
+                    <input type="text" id="nseCode"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white" required />
+                </div>
+                <div><label class="block text-sm text-slate-400 mb-1">Industry</label>
+                    <input type="text" id="industry"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+                </div>
+                <div class="flex gap-3 pt-2">
+                    <button type="button" onclick="hideAddCompany()"
+                        class="flex-1 px-4 py-2 border border-slate-600 rounded-lg text-slate-300">Cancel</button>
+                    <button type="submit"
+                        class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white">Add &
+                        Analyze</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Upload PDFs Modal -->
+    <div id="uploadModal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div
+            class="bg-surface-dark rounded-xl p-6 w-full max-w-2xl border border-slate-700 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-bold text-white">Upload & Analyze PDFs</h3>
+                <button onclick="hideUpload()" class="text-slate-400 hover:text-white">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+
+            <!-- Drop Zone -->
+            <div id="dropZone"
+                class="border-2 border-dashed border-slate-600 rounded-xl p-8 text-center hover:border-purple-500 transition-colors cursor-pointer mb-4"
+                onclick="document.getElementById('pdfInput').click()" ondrop="handleDrop(event)"
+                ondragover="event.preventDefault(); this.classList.add('border-purple-500')"
+                ondragleave="this.classList.remove('border-purple-500')">
+                <span class="material-symbols-outlined text-4xl text-slate-500 mb-2">upload_file</span>
+                <p class="text-slate-300 mb-2">Drag & drop PDF files here</p>
+                <p class="text-xs text-slate-500">or click to select files</p>
+                <input type="file" id="pdfInput" multiple accept=".pdf" class="hidden"
+                    onchange="handleFileSelect(event)">
+            </div>
+
+            <!-- Selected Files List -->
+            <div id="fileList" class="space-y-2 mb-4 max-h-40 overflow-y-auto"></div>
+
+            <!-- Upload Button -->
+            <div class="flex gap-3">
+                <button id="uploadBtn" onclick="uploadFiles()" disabled
+                    class="flex-1 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-white font-medium flex items-center justify-center gap-2">
+                    <span class="material-symbols-outlined">analytics</span>
+                    Analyze PDFs
+                </button>
+            </div>
+
+            <!-- Progress -->
+            <div id="uploadProgress" class="hidden mt-4">
+                <div class="flex items-center gap-3 mb-2">
+                    <div class="animate-spin w-5 h-5 border-2 border-purple-500 border-t-transparent rounded-full">
+                    </div>
+                    <span class="text-slate-300">Analyzing files...</span>
+                </div>
+                <div class="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+                    <div id="uploadProgressBar" class="h-full bg-purple-500 transition-all" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- Results -->
+            <div id="uploadResults" class="hidden mt-6">
+                <h4 class="text-sm font-semibold text-slate-300 uppercase tracking-wide mb-3">Analysis Results</h4>
+                <div class="bg-slate-900/50 rounded-lg overflow-hidden">
+                    <table class="w-full text-sm">
+                        <thead class="bg-slate-800">
+                            <tr class="text-slate-400 text-left">
+                                <th class="px-4 py-2">File</th>
+                                <th class="px-4 py-2 text-center">Sentiment</th>
+                                <th class="px-4 py-2 text-center">Category</th>
+                                <th class="px-4 py-2 text-center">Risk</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsTableBody" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+                <div id="resultsSummary" class="mt-3 p-3 bg-slate-800/50 rounded-lg text-sm text-slate-300"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        const CHART_COLORS = ['#22d3ee', '#a3e635', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#f43f5e'];
+        let selectedStocks = [];
+        let chartInstance = null;
+        let currentPage = 1;
+        const perPage = 5;
+
+        // Pagination
+        function loadStockTable(page = 1) {
+            currentPage = page;
+            fetch(`/api/stocks?page=${page}&per_page=${perPage}`)
+                .then(res => res.json())
+                .then(data => {
+                    renderStockTable(data.stocks);
+                    updatePagination(data.total, data.total_pages, page);
+                })
+                .catch(err => console.error('Error loading stocks:', err));
+        }
+
+        function renderStockTable(stocks) {
+            const tbody = document.getElementById('stockTableBody');
+            tbody.innerHTML = stocks.map(stock => {
+                const score = stock.Overall_Sentiment || 0;
+                const scoreClass = score > 0.2 ? 'text-emerald-500' : (score < -0.1 ? 'text-red-500' : 'text-amber-500');
+                const guidanceText = (stock.Guidance || 0) > 0 ? 'Raised' : ((stock.Guidance || 0) < 0 ? 'Lowered' : 'Maintained');
+                const guidanceClass = (stock.Guidance || 0) > 0 ? 'text-emerald-500' : ((stock.Guidance || 0) < 0 ? 'text-red-500' : 'text-slate-400');
+                const riskClass = (stock.Risk || 0) > 0.7 ? 'text-red-500 font-bold' : ((stock.Risk || 0) > 0.4 ? 'text-amber-500' : 'text-slate-400');
+                const barWidth = Math.abs(score) * 50;
+                const barClass = score >= 0 ? 'bg-emerald-500' : 'bg-red-500';
+                const barPosition = score >= 0 ? 'left-1/2' : 'right-1/2';
+                const barRound = score >= 0 ? 'rounded-r-full' : 'rounded-l-full';
+
+                return `
+        <tr class="hover:bg-slate-800/50 transition-colors cursor-pointer" onclick="addToChart('${stock.Company}')">
+            <td class="px-6 py-4 font-bold text-white">${stock.Company}</td>
+            <td class="px-6 py-4 text-slate-400">${stock.Sector || 'Unknown'}</td>
+            <td class="px-6 py-4 text-slate-400">${stock.Month} ${stock.Year}</td>
+            <td class="px-6 py-4">
+                <div class="flex items-center gap-3">
+                    <span class="font-bold ${scoreClass} w-12 text-right font-mono">${score >= 0 ? '+' : ''}${score.toFixed(2)}</span>
+                    <div class="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden relative">
+                        <div class="absolute left-1/2 w-0.5 h-full bg-slate-500 opacity-50"></div>
+                        <div class="h-full ${barClass} absolute ${barPosition} ${barRound}" style="width:${barWidth}%"></div>
+                    </div>
+                </div>
+            </td>
+            <td class="px-6 py-4 text-center text-slate-300 font-mono">${(stock.Polarity || 0).toFixed(3)}</td>
+            <td class="px-6 py-4"><span class="px-2 py-1 bg-slate-700 rounded text-xs text-slate-300">${stock.TopKeyword || 'N/A'}</span></td>
+            <td class="px-6 py-4 ${guidanceClass} font-medium">${guidanceText}</td>
+            <td class="px-6 py-4 text-right ${riskClass}">${(stock.Risk || 0).toFixed(2)}</td>
+        </tr>`;
+            }).join('');
+        }
+
+        function updatePagination(total, totalPages, currentPage) {
+            const start = (currentPage - 1) * perPage + 1;
+            const end = Math.min(currentPage * perPage, total);
+            document.getElementById('paginationInfo').textContent = `Showing ${start}-${end} of ${total} Stocks`;
+
+            const controls = document.getElementById('paginationControls');
+            let html = `<button onclick="loadStockTable(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''} class="px-3 py-1 border border-slate-700 rounded hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">Prev</button>`;
+
+            for (let i = 1; i <= Math.min(totalPages, 5); i++) {
+                if (i === currentPage) {
+                    html += `<button class="px-3 py-1 bg-primary text-white rounded">${i}</button>`;
+                } else {
+                    html += `<button onclick="loadStockTable(${i})" class="px-3 py-1 border border-slate-700 rounded hover:bg-slate-800">${i}</button>`;
+                }
+            }
+
+            html += `<button onclick="loadStockTable(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''} class="px-3 py-1 border border-slate-700 rounded hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">Next</button>`;
+            controls.innerHTML = html;
+        }
+
+        // Chart Functions
+        function addToChart(stockName) {
+            if (!selectedStocks.includes(stockName)) {
+                selectedStocks.push(stockName);
+                updateSelectedStocksUI();
+                fetchAndUpdateChart();
+            }
+        }
+
+        function removeFromChart(stockName) {
+            selectedStocks = selectedStocks.filter(s => s !== stockName);
+            updateSelectedStocksUI();
+            fetchAndUpdateChart();
+        }
+
+        function handleStockInput(event) { if (event.key === 'Enter') { addStockFromInput(); } }
+
+        function addStockFromInput() {
+            const input = document.getElementById('stockInput');
+            const value = input.value.trim().toUpperCase();
+            if (value && !selectedStocks.includes(value)) {
+                selectedStocks.push(value);
+                updateSelectedStocksUI();
+                fetchAndUpdateChart();
+            }
+            input.value = '';
+        }
+
+        function updateSelectedStocksUI() {
+            const container = document.getElementById('selectedStocks');
+            container.innerHTML = selectedStocks.map((stock, idx) => `
+        <div class="flex items-center gap-1 px-2 py-0.5 bg-slate-800 rounded-md border border-slate-700">
+            <div class="w-2 h-2 rounded-full" style="background-color: ${CHART_COLORS[idx % CHART_COLORS.length]}"></div>
+            <span class="text-xs text-slate-200 font-medium">${stock}</span>
+            <button class="text-slate-500 hover:text-white" onclick="event.stopPropagation(); removeFromChart('${stock}')">
+                <span class="material-symbols-outlined text-[12px]">close</span>
+            </button>
+        </div>
+    `).join('');
+        }
+
+        function fetchAndUpdateChart() {
+            if (selectedStocks.length === 0) {
+                document.getElementById('chartLoading').classList.remove('hidden');
+                document.getElementById('chartLoading').innerHTML = '<span>Select stocks to view time series...</span>';
+                document.getElementById('sentimentChart').classList.add('hidden');
+                document.getElementById('chartLegend').innerHTML = '';
+                if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+                return;
+            }
+
+            document.getElementById('chartLoading').innerHTML = '<span class="animate-pulse">Loading data...</span>';
+
+            fetch(`/api/timeseries?companies=${selectedStocks.join(',')}`)
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('chartLoading').classList.add('hidden');
+                    document.getElementById('sentimentChart').classList.remove('hidden');
+                    updateChart(data);
+                })
+                .catch(err => {
+                    console.error('Error fetching time series:', err);
+                    document.getElementById('chartLoading').innerHTML = '<span class="text-red-400">Error loading data</span>';
+                });
+        }
+
+        function updateChart(data) {
+            const ctx = document.getElementById('sentimentChart').getContext('2d');
+
+            // Collect all periods and parse them for proper chronological sorting
+            const allPeriods = new Set();
+            Object.values(data).forEach(series => series.forEach(p => allPeriods.add(p.period)));
+
+            // Month mapping for proper chronological sort
+            const monthMap = { 'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12 };
+
+            // Sort chronologically: parse "Jan 2023" -> {month:1, year:2023}, then sort
+            const sortedPeriods = Array.from(allPeriods).sort((a, b) => {
+                const [monthA, yearA] = a.split(' ');
+                const [monthB, yearB] = b.split(' ');
+                const dateA = parseInt(yearA) * 100 + (monthMap[monthA] || 0);
+                const dateB = parseInt(yearB) * 100 + (monthMap[monthB] || 0);
+                return dateA - dateB;
+            });
+
+            const datasets = Object.entries(data).map(([company, series], idx) => {
+                const scoreMap = {};
+                series.forEach(p => scoreMap[p.period] = p.score);
+                return {
+                    label: company,
+                    data: sortedPeriods.map(p => scoreMap[p] || null),
+                    borderColor: CHART_COLORS[idx % CHART_COLORS.length],
+                    backgroundColor: CHART_COLORS[idx % CHART_COLORS.length] + '20',
+                    tension: 0.3,
+                    fill: false,
+                    pointRadius: 3,
+                    spanGaps: true
+                };
+            });
+
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: { labels: sortedPeriods, datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { min: -1, max: 1, grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
+                        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', maxRotation: 45 } }
+                    }
+                }
+            });
+
+            document.getElementById('chartLegend').innerHTML = datasets.map(ds => `
+        <div class="flex items-center gap-2">
+            <div class="w-3 h-3 rounded-full" style="background-color: ${ds.borderColor}"></div>
+            <span class="text-sm text-slate-300">${ds.label}</span>
+        </div>
+    `).join('');
+        }
+
+        // Modal Functions
+        function showAddCompany() { document.getElementById('addCompanyModal').classList.remove('hidden'); }
+        function hideAddCompany() { document.getElementById('addCompanyModal').classList.add('hidden'); }
+
+        // Analysis Functions
+        async function runIncremental() {
+            if (!confirm('Start incremental analysis (new data only)?')) return;
+            const evtSource = new EventSource('/api/analyze/incremental');
+            evtSource.onmessage = function (e) {
+                const data = JSON.parse(e.data);
+                if (data.done) { evtSource.close(); location.reload(); }
+            };
+        }
+
+        async function runFull() {
+            if (!confirm('Start FULL re-analysis? This will re-process all companies.')) return;
+            const evtSource = new EventSource('/api/analyze/full');
+            evtSource.onmessage = function (e) {
+                const data = JSON.parse(e.data);
+                if (data.done) { evtSource.close(); location.reload(); }
+            };
+        }
+
+        // Upload Modal Functions
+        let selectedFiles = [];
+
+        function showUpload() {
+            document.getElementById('uploadModal').classList.remove('hidden');
+            selectedFiles = [];
+            updateFileList();
+            document.getElementById('uploadResults').classList.add('hidden');
+            document.getElementById('uploadProgress').classList.add('hidden');
+        }
+
+        function hideUpload() {
+            document.getElementById('uploadModal').classList.add('hidden');
+        }
+
+        function handleFileSelect(event) {
+            const files = Array.from(event.target.files);
+            files.forEach(f => { if (f.name.endsWith('.pdf') && !selectedFiles.some(sf => sf.name === f.name)) selectedFiles.push(f); });
+            updateFileList();
+        }
+
+        function handleDrop(event) {
+            event.preventDefault();
+            document.getElementById('dropZone').classList.remove('border-purple-500');
+            const files = Array.from(event.dataTransfer.files);
+            files.forEach(f => { if (f.name.endsWith('.pdf') && !selectedFiles.some(sf => sf.name === f.name)) selectedFiles.push(f); });
+            updateFileList();
+        }
+
+        function removeFile(idx) {
+            selectedFiles.splice(idx, 1);
+            updateFileList();
+        }
+
+        function updateFileList() {
+            const list = document.getElementById('fileList');
+            const btn = document.getElementById('uploadBtn');
+            btn.disabled = selectedFiles.length === 0;
+
+            list.innerHTML = selectedFiles.map((f, i) => `
+                <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                    <div class="flex items-center gap-2">
+                        <span class="material-symbols-outlined text-purple-400">description</span>
+                        <span class="text-sm text-slate-300">${f.name}</span>
+                        <span class="text-xs text-slate-500">(${(f.size / 1024).toFixed(1)} KB)</span>
+                    </div>
+                    <button onclick="removeFile(${i})" class="text-slate-500 hover:text-red-400">
+                        <span class="material-symbols-outlined text-sm">close</span>
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function uploadFiles() {
+            if (selectedFiles.length === 0) return;
+
+            document.getElementById('uploadProgress').classList.remove('hidden');
+            document.getElementById('uploadBtn').disabled = true;
+
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('files', f));
+
+            try {
+                const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                document.getElementById('uploadProgress').classList.add('hidden');
+                document.getElementById('uploadResults').classList.remove('hidden');
+
+                // Render results table
+                const tbody = document.getElementById('resultsTableBody');
+                tbody.innerHTML = data.results.map(r => {
+                    if (r.success) {
+                        const catClass = r.category === 'Positive' ? 'text-emerald-400 bg-emerald-500/20' :
+                            (r.category === 'Negative' ? 'text-red-400 bg-red-500/20' : 'text-amber-400 bg-amber-500/20');
+                        const riskClass = r.risk > 0.7 ? 'text-red-400' : (r.risk > 0.4 ? 'text-amber-400' : 'text-slate-400');
+                        return `
+                            <tr class="hover:bg-slate-800/50">
+                                <td class="px-4 py-2 text-white">${r.filename}</td>
+                                <td class="px-4 py-2 text-center font-mono ${r.overall_sentiment >= 0 ? 'text-emerald-400' : 'text-red-400'}">
+                                    ${r.overall_sentiment >= 0 ? '+' : ''}${r.overall_sentiment.toFixed(3)}
+                                </td>
+                                <td class="px-4 py-2 text-center"><span class="px-2 py-1 rounded text-xs ${catClass}">${r.category}</span></td>
+                                <td class="px-4 py-2 text-center ${riskClass}">${r.risk.toFixed(2)}</td>
+                            </tr>`;
+                    } else {
+                        return `<tr class="bg-red-900/20"><td class="px-4 py-2 text-white">${r.filename}</td><td colspan="3" class="px-4 py-2 text-red-400">${r.error}</td></tr>`;
+                    }
+                }).join('');
+
+                // Summary
+                document.getElementById('resultsSummary').innerHTML = `
+                    <strong>${data.successful}/${data.total_files}</strong> files analyzed successfully.
+                    Average sentiment: <span class="${data.avg_sentiment >= 0 ? 'text-emerald-400' : 'text-red-400'} font-mono">${data.avg_sentiment >= 0 ? '+' : ''}${data.avg_sentiment.toFixed(3)}</span>
+                `;
+
+            } catch (err) {
+                document.getElementById('uploadProgress').classList.add('hidden');
+                alert('Error uploading files: ' + err.message);
+            }
+
+            document.getElementById('uploadBtn').disabled = false;
+        }
+
+        function exportExcel() { window.location.href = '/api/export'; }
+
+
+        // Form submission
+        document.getElementById('addCompanyForm').onsubmit = async function (e) {
+            e.preventDefault();
+            const data = { name: document.getElementById('companyName').value, nse_code: document.getElementById('nseCode').value.toUpperCase(), industry: document.getElementById('industry').value };
+
+            const res = await fetch('/api/company/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            const result = await res.json();
+
+            if (result.success) {
+                alert('Company added! Running analysis...');
+                hideAddCompany();
+                await fetch(`/api/company/${data.nse_code}/analyze`, { method: 'POST' });
+                location.reload();
+            } else { alert('Error: ' + result.message); }
+        };
+
+        // Init
+        document.addEventListener('DOMContentLoaded', () => { loadStockTable(1); });
+    </script>
+
+</body>
+
+</html>

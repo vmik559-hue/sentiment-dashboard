@@ -6,15 +6,46 @@ __pycache__/
 .Python
 env/
 venv/
-.env
+.venv/
+ENV/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Data files (keep in cloud storage, not git)
+*.xlsx
+*.xls
+*.csv
+!nse-500-stocks.csv
+data/
+output/
+
+# Logs
+*.log
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# Environment
+.env
+.env.local
+*.env
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Railway
+.railway/
+
+# Large ML models (downloaded at runtime)
+models/
+*.bin
+*.pt
+*.onnx
