@@ -1,0 +1,29 @@
+# Version Control
+.git
+.gitignore
+
+# Python / Environment
+__pycache__/
+*.py[cod]
+*$py.class
+env/
+venv/
+.venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# Local Data (Don't copy potentially sensitive or large local data)
+*.xlsx
+*.csv
+!nse-500-stocks.csv
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+Dockerfile
+.dockerignore
