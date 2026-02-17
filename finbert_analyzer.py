@@ -31,9 +31,10 @@ except ImportError:
 # PDF extraction
 try:
     import PyPDF2
+    PDF_AVAILABLE = True
 except ImportError:
-    print("[!] PyPDF2 not installed. Run: pip install PyPDF2")
-    raise
+    PDF_AVAILABLE = False
+    print("[!] PyPDF2 not installed. PDF extraction will not work.")
 
 # FinBERT model
 try:
@@ -178,6 +179,10 @@ class FinBERTAnalyzer:
         Returns:
             Extracted text or None if failed
         """
+        if not PDF_AVAILABLE:
+            logger.error("PDF extraction requested but PyPDF2 not installed.")
+            return None
+            
         content = self._fetch_url(url)
         if not content:
             return None
