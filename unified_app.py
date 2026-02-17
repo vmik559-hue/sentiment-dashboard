@@ -54,6 +54,9 @@ from state_tracker import StateTracker, get_state_tracker
 BASE_PATH = Path(__file__).parent
 OUTPUT_FILE = BASE_PATH / "Sentiment_Analysis_Production.xlsx"
 
+# Detect serverless environment (Vercel)
+IS_SERVERLESS = os.environ.get('VERCEL', '') == '1'
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -150,24 +153,46 @@ class CloudTranscriptFetcher:
         transcripts = []
         
         try:
-            # Find concalls section
-            concalls_heading = None
-            for heading in soup.find_all(['h2', 'h3', 'h4']):
-                if heading.get_text(strip=True).lower() == 'concalls':
-                    concalls_heading = heading
-                    break
+            # Method 1: Find section by ID (some pages use id="concalls")
+            concalls_section = soup.find(id='concalls')
             
-            if not concalls_heading:
+            # Method 2: Find heading with 'concalls' text (case-insensitive)
+            if not concalls_section:
+                for heading in soup.find_all(['h2', 'h3', 'h4', 'div', 'section']):
+                    heading_text = heading.get_text(strip=True).lower()
+                    if 'concalls' in heading_text or 'con calls' in heading_text:
+                        concalls_section = heading
+                        break
+            
+            # Method 3: Search within Documents section
+            if not concalls_section:
+                for heading in soup.find_all(['h2', 'h3']):
+                    if 'documents' in heading.get_text(strip=True).lower():
+                        # Look for Concalls within this section
+                        sibling = heading.find_next()
+                        while sibling:
+                            sibling_text = sibling.get_text(strip=True).lower() if hasattr(sibling, 'get_text') else ''
+                            if 'concalls' in sibling_text:
+                                concalls_section = sibling
+                                break
+                            # Stop if we hit another major section
+                            if sibling.name in ['h2'] and sibling != heading:
+                                break
+                            sibling = sibling.find_next()
+                        break
+            
+            if not concalls_section:
                 return []
             
-            # Collect links
+            # Collect all links from the concalls section
             all_links = []
-            current = concalls_heading.find_next()
-            stop_keywords = ['announcements', 'annual reports', 'shareholding', 'quarters', 'documents']
+            current = concalls_section.find_next() if concalls_section.name in ['h2', 'h3', 'h4'] else concalls_section
+            stop_keywords = ['announcements', 'annual reports', 'shareholding', 'quarters', 'credit ratings']
             
             while current and len(all_links) < 300:
                 if current.name in ['h2', 'h3', 'h4']:
-                    if any(k in current.get_text(strip=True).lower() for k in stop_keywords):
+                    text = current.get_text(strip=True).lower()
+                    if any(k in text for k in stop_keywords):
                         break
                 
                 if current.name == 'a':
@@ -202,6 +227,12 @@ class CloudTranscriptFetcher:
                     continue
                 
                 full_url = urljoin(self.base_url, href)
+                
+                # Only use BSE India links (reliable), skip external company websites
+                # BSE India hosts official filings that don't disappear
+                if 'bseindia.com' not in full_url:
+                    continue
+                
                 if full_url not in seen_urls:
                     seen_urls.add(full_url)
                     transcripts.append({
@@ -553,12 +584,21 @@ class AnalysisEngine:
                         processing_status['logs'].append(
                             f"[{i}/{len(companies)}] {nse_code}: {len(results)} quarters analyzed"
                         )
+                        
+                        # Batch save every 10 companies
+                        if i % 10 == 0:
+                            self.save_results(all_results, mode='append')
+                            # Clear saved results from memory to avoid duplicates if we save again later
+                            # But wait, save_results logic handles deduplication.
+                            # Better approach: keep accumulating but save the snapshot.
+                            logger.info(f"Batch save at {i} companies")
+                            
                 except Exception as e:
                     processing_status['logs'].append(f"[{i}/{len(companies)}] {nse_code}: Error - {e}")
                 
-                time.sleep(0.2)
+                time.sleep(1.0)  # Increased delay to be polite
             
-            # Save results
+            # Save final results
             if all_results:
                 self.save_results(all_results, mode='append')
             
@@ -1072,6 +1112,9 @@ def api_data():
     if df is None:
         return jsonify({'error': 'No data available'}), 404
     
+    # Replace NaN with None for JSON serialization
+    df = df.where(df.notna(), None)
+    
     return jsonify({
         'stats': get_summary_stats(),
         'top_positive': get_top_stocks(5),
@@ -1106,9 +1149,11 @@ def api_status():
     })
 
 
-@app.route('/api/analyze/incremental', methods=['POST'])
+@app.route('/api/analyze/incremental', methods=['GET', 'POST'])
 def api_analyze_incremental():
     """Run incremental analysis."""
+    if IS_SERVERLESS:
+        return jsonify({'error': 'Analysis is not available in serverless mode. Run analysis locally and push the updated Excel file.'}), 503
     if processing_status['running']:
         return jsonify({'error': 'Analysis already running'}), 409
     
@@ -1126,9 +1171,11 @@ def api_analyze_incremental():
     return Response(generate(), mimetype='text/event-stream')
 
 
-@app.route('/api/analyze/full', methods=['POST'])
+@app.route('/api/analyze/full', methods=['GET', 'POST'])
 def api_analyze_full():
     """Run full analysis (force re-run all)."""
+    if IS_SERVERLESS:
+        return jsonify({'error': 'Full analysis is not available in serverless mode. Run analysis locally and push the updated Excel file.'}), 503
     if processing_status['running']:
         return jsonify({'error': 'Analysis already running'}), 409
     
@@ -1149,6 +1196,8 @@ def api_analyze_full():
 @app.route('/api/analyze/local', methods=['POST', 'GET'])
 def api_analyze_local():
     """Analyze all local PDF transcript files from Screener_Documents folder."""
+    if IS_SERVERLESS:
+        return jsonify({'error': 'Local analysis is not available in serverless mode.'}), 503
     if processing_status['running']:
         return jsonify({'error': 'Analysis already running'}), 409
     
@@ -1182,6 +1231,8 @@ def api_analyze_local():
 @app.route('/api/upload', methods=['POST'])
 def api_upload_pdfs():
     """Upload and analyze PDF files directly."""
+    if IS_SERVERLESS:
+        return jsonify({'error': 'PDF upload is not available in serverless mode. Run analysis locally.'}), 503
     if 'files' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
     
@@ -1290,6 +1341,8 @@ def api_add_company():
 @app.route('/api/company/<nse_code>/analyze', methods=['POST'])
 def api_analyze_single(nse_code):
     """Analyze a single company immediately."""
+    if IS_SERVERLESS:
+        return jsonify({'error': 'Company analysis is not available in serverless mode.'}), 503
     if processing_status['running']:
         return jsonify({'error': 'Analysis already running'}), 409
     
@@ -1377,272 +1430,63 @@ def health():
     })
 
 
-# ==================== DASHBOARD TEMPLATE ====================
-DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
-<html class="dark" lang="en">
-<head>
-    <meta charset="utf-8"/>
-    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <title>Sentiment Pipeline - Nifty 500 Analysis</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            darkMode: "class",
-            theme: {
-                extend: {
-                    fontFamily: { sans: ["Inter", "sans-serif"] },
-                    colors: {
-                        surface: { dark: "#1e293b" },
-                        background: { dark: "#0f172a" }
-                    }
-                }
-            }
-        };
-    </script>
-</head>
-<body class="bg-background-dark text-slate-200 font-sans min-h-screen">
-
-<header class="bg-surface-dark/80 backdrop-blur border-b border-slate-700 sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-            <div class="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
-                <span class="material-symbols-outlined text-white">analytics</span>
-            </div>
-            <div>
-                <h1 class="text-lg font-bold text-white">Sentiment Pipeline</h1>
-                <p class="text-xs text-slate-400">Nifty 500 • FinBERT Analysis</p>
-            </div>
-        </div>
-        <div class="flex items-center gap-3">
-            <span class="text-xs text-slate-400">Last run: {{ last_run }}</span>
-            <button onclick="runIncremental()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
-                <span class="material-symbols-outlined text-sm">play_arrow</span>
-                Run New
-            </button>
-            <button onclick="runFull()" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
-                <span class="material-symbols-outlined text-sm">refresh</span>
-                Full Re-Run
-            </button>
-            <button onclick="showAddCompany()" class="px-4 py-2 border border-slate-600 hover:bg-slate-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
-                <span class="material-symbols-outlined text-sm">add</span>
-                Add Company
-            </button>
-        </div>
-    </div>
-</header>
-
-<!-- Processing Status -->
-<div id="processingStatus" class="{% if not processing.running %}hidden{% endif %} bg-blue-900/30 border-b border-blue-700">
-    <div class="max-w-7xl mx-auto px-4 py-3">
-        <div class="flex items-center gap-3">
-            <div class="animate-spin w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full"></div>
-            <span id="statusText" class="text-blue-300">{{ processing.current_company or 'Starting...' }}</span>
-            <span class="text-slate-400">{{ processing.progress }}/{{ processing.total }}</span>
-        </div>
-        <div class="mt-2 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-            <div id="progressBar" class="h-full bg-blue-500 transition-all" style="width: {{ (processing.progress / processing.total * 100) if processing.total > 0 else 0 }}%"></div>
-        </div>
-    </div>
-</div>
-
-<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
-
-<!-- Stats Cards -->
-<section class="grid grid-cols-2 md:grid-cols-4 gap-4">
-    <div class="bg-surface-dark p-4 rounded-xl border border-slate-700">
-        <p class="text-xs text-slate-400 uppercase font-semibold">Total Stocks</p>
-        <p class="text-2xl font-bold text-white mt-1">{{ stats.total }}</p>
-    </div>
-    <div class="bg-emerald-900/20 p-4 rounded-xl border border-emerald-800">
-        <p class="text-xs text-emerald-400 uppercase font-semibold">Positive</p>
-        <p class="text-2xl font-bold text-emerald-400 mt-1">{{ stats.positive }}</p>
-    </div>
-    <div class="bg-amber-900/20 p-4 rounded-xl border border-amber-800">
-        <p class="text-xs text-amber-400 uppercase font-semibold">Neutral</p>
-        <p class="text-2xl font-bold text-amber-400 mt-1">{{ stats.neutral }}</p>
-    </div>
-    <div class="bg-red-900/20 p-4 rounded-xl border border-red-800">
-        <p class="text-xs text-red-400 uppercase font-semibold">Negative</p>
-        <p class="text-2xl font-bold text-red-400 mt-1">{{ stats.negative }}</p>
-    </div>
-</section>
-
-<!-- Top Stocks -->
-<section class="grid grid-cols-1 md:grid-cols-3 gap-6">
-    <!-- Top Positive -->
-    <div class="bg-surface-dark rounded-xl border border-slate-700 overflow-hidden">
-        <div class="p-4 border-b border-slate-700 flex items-center gap-2">
-            <span class="material-symbols-outlined text-emerald-500">trending_up</span>
-            <h3 class="font-bold text-white">Top Positive</h3>
-        </div>
-        <div class="p-2">
-            {% for stock in top_positive %}
-            <div class="flex items-center justify-between p-2 hover:bg-slate-700/50 rounded-lg">
-                <div>
-                    <p class="font-semibold text-white">{{ stock.name }}</p>
-                    <p class="text-xs text-slate-400">{{ stock.sector }}</p>
-                </div>
-                <span class="text-emerald-400 font-mono font-bold">+{{ "%.2f"|format(stock.score) }}</span>
-            </div>
-            {% endfor %}
-            {% if not top_positive %}<p class="p-4 text-slate-500 text-sm">No data</p>{% endif %}
-        </div>
-    </div>
-
-    <!-- Top Negative -->
-    <div class="bg-surface-dark rounded-xl border border-slate-700 overflow-hidden">
-        <div class="p-4 border-b border-slate-700 flex items-center gap-2">
-            <span class="material-symbols-outlined text-red-500">trending_down</span>
-            <h3 class="font-bold text-white">Top Negative</h3>
-        </div>
-        <div class="p-2">
-            {% for stock in top_negative %}
-            <div class="flex items-center justify-between p-2 hover:bg-slate-700/50 rounded-lg">
-                <div>
-                    <p class="font-semibold text-white">{{ stock.name }}</p>
-                    <p class="text-xs text-slate-400">{{ stock.sector }}</p>
-                </div>
-                <span class="text-red-400 font-mono font-bold">{{ "%.2f"|format(stock.score) }}</span>
-            </div>
-            {% endfor %}
-            {% if not top_negative %}<p class="p-4 text-slate-500 text-sm">No data</p>{% endif %}
-        </div>
-    </div>
-
-    <!-- Sectors -->
-    <div class="bg-surface-dark rounded-xl border border-slate-700 overflow-hidden">
-        <div class="p-4 border-b border-slate-700 flex items-center gap-2">
-            <span class="material-symbols-outlined text-blue-500">category</span>
-            <h3 class="font-bold text-white">Sector Summary</h3>
-        </div>
-        <div class="p-2">
-            {% for sector in sectors %}
-            <div class="flex items-center justify-between p-2 hover:bg-slate-700/50 rounded-lg">
-                <div>
-                    <p class="font-semibold text-white">{{ sector.sector }}</p>
-                    <p class="text-xs text-slate-400">{{ sector.count }} stocks</p>
-                </div>
-                <span class="{% if sector.score > 0 %}text-emerald-400{% elif sector.score < 0 %}text-red-400{% else %}text-amber-400{% endif %} font-mono font-bold">{{ "%.2f"|format(sector.score) }}</span>
-            </div>
-            {% endfor %}
-            {% if not sectors %}<p class="p-4 text-slate-500 text-sm">No data</p>{% endif %}
-        </div>
-    </div>
-</section>
-
-<!-- Actions -->
-<section class="flex gap-4">
-    <a href="/api/export" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-2">
-        <span class="material-symbols-outlined text-sm">download</span>
-        Export Excel
-    </a>
-    <a href="/api/companies" target="_blank" class="px-4 py-2 border border-slate-600 hover:bg-slate-700 text-white rounded-lg flex items-center gap-2">
-        <span class="material-symbols-outlined text-sm">list</span>
-        View All Companies
-    </a>
-</section>
-
-</main>
-
-<!-- Add Company Modal -->
-<div id="addCompanyModal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-    <div class="bg-surface-dark rounded-xl border border-slate-700 p-6 w-full max-w-md">
-        <h2 class="text-lg font-bold text-white mb-4">Add Custom Company</h2>
-        <form id="addCompanyForm" class="space-y-4">
-            <div>
-                <label class="text-sm text-slate-400">Company Name *</label>
-                <input name="name" required class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white"/>
-            </div>
-            <div>
-                <label class="text-sm text-slate-400">NSE Code *</label>
-                <input name="nse_code" required class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white"/>
-            </div>
-            <div>
-                <label class="text-sm text-slate-400">Industry</label>
-                <input name="industry" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white"/>
-            </div>
-            <div class="flex gap-3">
-                <button type="submit" class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg">Add & Analyze</button>
-                <button type="button" onclick="hideAddCompany()" class="px-4 py-2 border border-slate-600 hover:bg-slate-700 text-white rounded-lg">Cancel</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<script>
-function runIncremental() {
-    document.getElementById('processingStatus').classList.remove('hidden');
-    
-    const es = new EventSource('/api/analyze/incremental');
-    es.onmessage = function(e) {
-        const data = JSON.parse(e.data);
-        document.getElementById('statusText').textContent = data.current || 'Processing...';
-        document.getElementById('progressBar').style.width = (data.progress / data.total * 100) + '%';
-        if (data.done) {
-            es.close();
-            setTimeout(() => location.reload(), 1000);
-        }
-    };
-}
-
-function runFull() {
-    if (!confirm('This will re-analyze ALL companies. Continue?')) return;
-    
-    document.getElementById('processingStatus').classList.remove('hidden');
-    
-    fetch('/api/analyze/full', { method: 'POST' })
-        .then(() => {
-            const es = new EventSource('/api/analyze/full');
-            es.onmessage = function(e) {
-                const data = JSON.parse(e.data);
-                document.getElementById('statusText').textContent = data.current || 'Processing...';
-                document.getElementById('progressBar').style.width = (data.progress / data.total * 100) + '%';
-                if (data.done) {
-                    es.close();
-                    setTimeout(() => location.reload(), 1000);
-                }
-            };
-        });
-}
-
-function showAddCompany() {
-    document.getElementById('addCompanyModal').classList.remove('hidden');
-}
-
-function hideAddCompany() {
-    document.getElementById('addCompanyModal').classList.add('hidden');
-}
-
-document.getElementById('addCompanyForm').onsubmit = async function(e) {
-    e.preventDefault();
-    const form = new FormData(e.target);
-    const data = Object.fromEntries(form);
-    
-    const res = await fetch('/api/company/add', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data)
-    });
-    
-    const result = await res.json();
-    
-    if (result.success) {
-        alert('Company added! Running analysis...');
-        hideAddCompany();
+@app.route('/api/warmup', methods=['GET', 'POST'])
+def api_warmup():
+    """
+    Pre-load the FinBERT model to avoid timeout on first upload.
+    Call this endpoint when the dashboard loads.
+    """
+    try:
+        engine = get_engine()
+        # Check if model is already loaded
+        if hasattr(engine.analyzer, '_model_loaded') and engine.analyzer._model_loaded:
+            return jsonify({
+                'status': 'ready',
+                'message': 'FinBERT model is already loaded',
+                'model_loaded': True
+            })
         
-        // Analyze the new company
-        await fetch(`/api/company/${data.nse_code}/analyze`, { method: 'POST' });
-        location.reload();
-    } else {
-        alert('Error: ' + result.message);
-    }
-};
-</script>
+        # Trigger model loading by accessing the model property
+        # This will lazy-load the model if not already loaded
+        if engine.analyzer.use_finbert:
+            engine.analyzer._ensure_model_loaded()
+            return jsonify({
+                'status': 'ready',
+                'message': 'FinBERT model loaded successfully',
+                'model_loaded': True
+            })
+        else:
+            return jsonify({
+                'status': 'ready',
+                'message': 'Using TextBlob fallback (FinBERT not available)',
+                'model_loaded': False,
+                'using_fallback': True
+            })
+    except Exception as e:
+        logger.error(f"Error warming up model: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'model_loaded': False
+        }), 500
 
-</body>
-</html>'''
+
+@app.route('/api/model-status')
+def api_model_status():
+    """Check if the FinBERT model is loaded."""
+    try:
+        engine = get_engine()
+        model_loaded = hasattr(engine.analyzer, '_model_loaded') and engine.analyzer._model_loaded
+        return jsonify({
+            'model_loaded': model_loaded,
+            'using_finbert': engine.analyzer.use_finbert
+        })
+    except Exception as e:
+        return jsonify({
+            'model_loaded': False,
+            'error': str(e)
+        })
+
 
 
 if __name__ == "__main__":

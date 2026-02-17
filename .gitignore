@@ -17,6 +17,7 @@ ENV/
 
 # Data files (keep in cloud storage, not git)
 *.xlsx
+!Sentiment_Analysis_Production.xlsx
 *.xls
 *.csv
 !nse-500-stocks.csv
@@ -40,6 +41,9 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Processing state (generated at runtime)
+processing_state.json
 
 # Railway
 .railway/

@@ -540,6 +540,8 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script
+        src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.1/dist/chartjs-plugin-annotation.min.js"></script>
     <script>
         const CHART_COLORS = ['#22d3ee', '#a3e635', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#f43f5e'];
         let selectedStocks = [];
@@ -702,15 +704,37 @@
             const datasets = Object.entries(data).map(([company, series], idx) => {
                 const scoreMap = {};
                 series.forEach(p => scoreMap[p.period] = p.score);
+                const dataPoints = sortedPeriods.map(p => scoreMap[p] || null);
+                const baseColor = CHART_COLORS[idx % CHART_COLORS.length];
+
                 return {
                     label: company,
-                    data: sortedPeriods.map(p => scoreMap[p] || null),
-                    borderColor: CHART_COLORS[idx % CHART_COLORS.length],
-                    backgroundColor: CHART_COLORS[idx % CHART_COLORS.length] + '20',
+                    data: dataPoints,
+                    borderColor: baseColor,
+                    backgroundColor: baseColor + '20',
                     tension: 0.3,
                     fill: false,
                     pointRadius: 3,
-                    spanGaps: true
+                    spanGaps: true,
+                    segment: {
+                        borderColor: ctx => {
+                            // If both points of segment are negative, make it red
+                            const p0 = ctx.p0.parsed.y;
+                            const p1 = ctx.p1.parsed.y;
+                            if ((p0 < 0 && p1 < 0) || (p0 < 0 || p1 < 0)) {
+                                return '#ef4444'; // red-500
+                            }
+                            return baseColor;
+                        }
+                    },
+                    pointBackgroundColor: ctx => {
+                        // Point color based on value
+                        const value = ctx.raw;
+                        if (value !== null && value < 0) {
+                            return '#ef4444'; // red-500
+                        }
+                        return baseColor;
+                    }
                 };
             });
 
@@ -721,7 +745,28 @@
                 data: { labels: sortedPeriods, datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    plugins: {
+                        legend: { display: false },
+                        annotation: {
+                            annotations: {
+                                zeroLine: {
+                                    type: 'line',
+                                    yMin: 0,
+                                    yMax: 0,
+                                    borderColor: 'rgba(255, 255, 255, 0.5)',
+                                    borderWidth: 2,
+                                    borderDash: [6, 6],
+                                    label: {
+                                        display: true,
+                                        content: '0',
+                                        position: 'start',
+                                        color: '#94a3b8',
+                                        font: { size: 10 }
+                                    }
+                                }
+                            }
+                        }
+                    },
                     scales: {
                         y: { min: -1, max: 1, grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
                         x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', maxRotation: 45 } }
@@ -762,6 +807,7 @@
 
         // Upload Modal Functions
         let selectedFiles = [];
+        let modelReady = false;
 
         function showUpload() {
             document.getElementById('uploadModal').classList.remove('hidden');
@@ -769,6 +815,46 @@
             updateFileList();
             document.getElementById('uploadResults').classList.add('hidden');
             document.getElementById('uploadProgress').classList.add('hidden');
+
+            // Trigger model warmup in the background
+            warmupModel();
+        }
+
+        async function warmupModel() {
+            // Check if model is already loaded
+            try {
+                const statusRes = await fetch('/api/model-status');
+                const statusData = await statusRes.json();
+
+                if (statusData.model_loaded) {
+                    modelReady = true;
+                    return;
+                }
+
+                // Show loading indicator
+                const dropZone = document.getElementById('dropZone');
+                const originalHTML = dropZone.innerHTML;
+                dropZone.innerHTML = `
+                    <div class="flex flex-col items-center">
+                        <div class="animate-spin w-8 h-8 border-3 border-purple-500 border-t-transparent rounded-full mb-3"></div>
+                        <p class="text-purple-300 font-medium">Preparing AI Model...</p>
+                        <p class="text-xs text-slate-500 mt-1">This may take a minute on first use</p>
+                    </div>
+                `;
+
+                // Trigger warmup
+                const warmupRes = await fetch('/api/warmup', { method: 'POST' });
+                const warmupData = await warmupRes.json();
+
+                modelReady = true;
+
+                // Restore drop zone
+                dropZone.innerHTML = originalHTML;
+
+            } catch (err) {
+                console.error('Model warmup error:', err);
+                modelReady = true; // Allow upload anyway, will use fallback
+            }
         }
 
         function hideUpload() {
@@ -822,8 +908,22 @@
             const formData = new FormData();
             selectedFiles.forEach(f => formData.append('files', f));
 
+            // Use AbortController with extended timeout (5 minutes for large files or first load)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+
             try {
-                const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData,
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (!res.ok) {
+                    throw new Error(`Server error: ${res.status}`);
+                }
+
                 const data = await res.json();
 
                 document.getElementById('uploadProgress').classList.add('hidden');
@@ -857,8 +957,18 @@
                 `;
 
             } catch (err) {
+                clearTimeout(timeoutId);
                 document.getElementById('uploadProgress').classList.add('hidden');
-                alert('Error uploading files: ' + err.message);
+
+                let errorMessage = 'Error analyzing files: ';
+                if (err.name === 'AbortError') {
+                    errorMessage += 'Request timed out. The AI model may still be loading. Please try again in a moment.';
+                } else if (err.message === 'Failed to fetch') {
+                    errorMessage += 'Connection failed. Please ensure the server is running and try again.';
+                } else {
+                    errorMessage += err.message;
+                }
+                alert(errorMessage);
             }
 
             document.getElementById('uploadBtn').disabled = false;
