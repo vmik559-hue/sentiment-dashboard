@@ -921,7 +921,12 @@
                 clearTimeout(timeoutId);
 
                 if (!res.ok) {
-                    throw new Error(`Server error: ${res.status}`);
+                    let errorMsg = `Server error: ${res.status}`;
+                    try {
+                        const errData = await res.json();
+                        if (errData.error) errorMsg = errData.error;
+                    } catch (e) { console.error('Error parsing error response:', e); }
+                    throw new Error(errorMsg);
                 }
 
                 const data = await res.json();
